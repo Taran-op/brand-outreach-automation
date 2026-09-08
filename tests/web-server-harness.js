@@ -4,7 +4,7 @@ const path = require('path');
 const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
-const sourceFiles = ['00_Config.gs', '01_Constants.gs', '02_Utils.gs', '10_WebApp.gs'];
+const sourceFiles = ['00_Config.gs', '01_Constants.gs', '02_Utils.gs', '03_Sheets.gs', '07_OutreachService.gs', '10_WebApp.gs'];
 const source = sourceFiles.map((name) => fs.readFileSync(path.join(root, 'src', name), 'utf8')).join('\n');
 const context = {
   console,
@@ -30,6 +30,20 @@ const result = vm.runInContext(`${source}\n(() => {
   let badId = false;
   try { validateUiLeadId_('../bad'); } catch (error) { badId = true; }
   check(badId, 'unsafe lead identifiers are rejected');
+  const headerMap = {};
+  ALL_LEAD_HEADERS.forEach((header, index) => { headerMap[header] = index + 1; });
+  const values = new Array(ALL_LEAD_HEADERS.length).fill('');
+  const set = (header, value) => { values[headerMap[header] - 1] = value; };
+  set(LEAD_HEADERS.LEAD_ID, 'demo-lead-001');
+  set(LEAD_HEADERS.COMPANY, 'Acme');
+  set(LEAD_HEADERS.EMAIL, 'brand@acme.com');
+  set(LEAD_HEADERS.STATUS, STATUS.APPROVED);
+  const record = { rowNumber: 2, values, headerMap };
+  check(getInitialApprovalIssue_(record, [record], '', {}, { 'brand@acme.com': 1 }) === '', 'valid explicit approval is ready');
+  set(LEAD_HEADERS.OPT_OUT, true);
+  check(/Opt Out/.test(getInitialApprovalIssue_(record, [record], '', {}, { 'brand@acme.com': 1 })), 'opt-out approval is rejected');
+  set(LEAD_HEADERS.OPT_OUT, false);
+  check(/Another lead/.test(getInitialApprovalIssue_(record, [record], '', {}, { 'brand@acme.com': 2 })), 'duplicate email approval is rejected');
   return checks.length;
 })()`, context);
 

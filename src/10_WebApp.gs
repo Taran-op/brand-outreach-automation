@@ -54,8 +54,10 @@ function uiBootstrap() {
     return !!action && !validateFollowUpState_(record, action) &&
       !isTrue_(leadValue_(record, LEAD_HEADERS.OPT_OUT));
   }).length;
+  const initialSafetyIndex = buildInitialSafetyIndex_(rows);
+  const emailCounts = buildUiEmailCounts_(rows);
   const approvedReady = rows.filter(function (record) {
-    return getInitialApprovalIssue_(record, rows) === '';
+    return getInitialApprovalIssue_(record, rows, '', initialSafetyIndex, emailCounts) === '';
   }).length;
   const dailyState = getDailySendState_();
   const issues = collectConfigurationIssues_({ requireMailbox: false, requireSend: false });
@@ -257,7 +259,16 @@ function cloneRecordWithUpdates_(record, updates) {
   return { rowNumber: record.rowNumber, values: values, headerMap: record.headerMap };
 }
 
-function getInitialApprovalIssue_(record, allRows, currentId) {
+function buildUiEmailCounts_(rows) {
+  const counts = {};
+  (rows || []).forEach(function (record) {
+    const email = normalizeEmail_(leadValue_(record, LEAD_HEADERS.EMAIL));
+    if (email) counts[email] = (counts[email] || 0) + 1;
+  });
+  return counts;
+}
+
+function getInitialApprovalIssue_(record, allRows, currentId, safetyIndex, emailCounts) {
   if (!isExactStatus_(leadValue_(record, LEAD_HEADERS.STATUS), STATUS.APPROVED)) return 'Status is not APPROVED.';
   if (isTrue_(leadValue_(record, LEAD_HEADERS.OPT_OUT))) return 'Opt Out is TRUE.';
   if (!safeDisplayText_(leadValue_(record, LEAD_HEADERS.COMPANY))) return 'Company is required.';
@@ -267,12 +278,17 @@ function getInitialApprovalIssue_(record, allRows, currentId) {
   if (hasInitialSuccessEvidence_(record)) return 'Initial-send evidence already exists.';
   if (hasPendingAction_(record)) return 'A pending/uncertain send action exists.';
   const id = currentId || leadId_(record);
-  const duplicate = (allRows || []).some(function (other) {
-    return leadId_(other) !== id && normalizeEmail_(leadValue_(other, LEAD_HEADERS.EMAIL)) === email;
-  });
+  const counts = emailCounts || buildUiEmailCounts_(allRows || []);
+  let duplicate = Number(counts[email] || 0) > 1;
+  // A proposed email edit is not represented in allRows/emailCounts yet.
+  if (!duplicate) {
+    duplicate = (allRows || []).some(function (other) {
+      return leadId_(other) !== id && normalizeEmail_(leadValue_(other, LEAD_HEADERS.EMAIL)) === email;
+    });
+  }
   if (duplicate) return 'Another lead row already uses this email address.';
-  const safetyIndex = buildInitialSafetyIndex_(allRows || []);
-  if (safetyIndex[email]) return 'Suppression or prior-send evidence exists for this email.';
+  const blocked = safetyIndex || buildInitialSafetyIndex_(allRows || []);
+  if (blocked[email]) return 'Suppression or prior-send evidence exists for this email.';
   return '';
 }
 
@@ -284,6 +300,8 @@ function uiBulkApprove(leadIds) {
     const sheet = getLeadsSheet_();
     const rows = getLeadRows_(sheet);
     assertUniqueLeadIds_(rows);
+    const safetyIndex = buildInitialSafetyIndex_(rows);
+    const emailCounts = buildUiEmailCounts_(rows);
     const approved = [];
     const rejected = [];
     leadIds.forEach(function (rawId) {
@@ -293,7 +311,7 @@ function uiBulkApprove(leadIds) {
         const proposed = {};
         proposed[LEAD_HEADERS.STATUS] = STATUS.APPROVED;
         const candidate = cloneRecordWithUpdates_(record, proposed);
-        const issue = getInitialApprovalIssue_(candidate, rows, id);
+        const issue = getInitialApprovalIssue_(candidate, rows, id, safetyIndex, emailCounts);
         assertCondition_(!issue, issue);
         updateLeadFieldsById_(sheet, id, {
           [LEAD_HEADERS.STATUS]: STATUS.APPROVED,

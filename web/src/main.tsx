@@ -70,7 +70,7 @@ function callServer<T>(name: string, ...args: unknown[]): Promise<T> {
     const failure = success.withFailureHandler((error) => reject(new Error(typeof error === 'string' ? error : error?.message || 'Apps Script request failed.')));
     const method = failure[name];
     if (typeof method !== 'function') return reject(new Error(`Server method ${name} is unavailable.`));
-    (method as (...values: unknown[]) => void)(...args);
+    (method as (...values: unknown[]) => void).apply(failure, args);
   });
 }
 
