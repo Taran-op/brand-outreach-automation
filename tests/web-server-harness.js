@@ -1,0 +1,42 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const root = path.resolve(__dirname, '..');
+const sourceFiles = ['00_Config.gs', '01_Constants.gs', '02_Utils.gs', '10_WebApp.gs'];
+const source = sourceFiles.map((name) => fs.readFileSync(path.join(root, 'src', name), 'utf8')).join('\n');
+const context = {
+  console,
+  Session: {
+    getActiveUser: () => ({ getEmail: () => 'taran.devx@gmail.com' })
+  },
+  Utilities: {
+    getUuid: () => '00000000-0000-4000-8000-000000000001'
+  }
+};
+vm.createContext(context);
+const result = vm.runInContext(`${source}\n(() => {
+  const checks = [];
+  const check = (condition, message) => { if (!condition) throw new Error(message); checks.push(message); };
+  check(assertUiOwner_() === 'taran.devx@gmail.com', 'configured owner is authorized');
+  Session.getActiveUser = () => ({ getEmail: () => 'intruder@example.com' });
+  let rejected = false;
+  try { assertUiOwner_(); } catch (error) { rejected = /not authorized/.test(String(error.message)); }
+  check(rejected, 'unlisted account is rejected');
+  check(safeSheetText_('=IMPORTXML("x")').charAt(0) === "'", 'formula-like text is neutralized');
+  check(sanitizeUiText_('  A\\n B  ', 20) === 'A B', 'single-line UI text is normalized');
+  check(validateUiLeadId_('demo-lead-001') === 'demo-lead-001', 'lead identifiers are validated');
+  let badId = false;
+  try { validateUiLeadId_('../bad'); } catch (error) { badId = true; }
+  check(badId, 'unsafe lead identifiers are rejected');
+  return checks.length;
+})()`, context);
+
+const html = fs.readFileSync(path.join(root, 'appsscript', 'Index.html'), 'utf8');
+assert(html.includes('google') && html.includes('script') && html.includes('run'), 'Built UI must use the Apps Script bridge.');
+assert(html.includes('DRY RUN'), 'Built UI must visibly represent dry-run safety.');
+assert(!/<script[^>]+src=/i.test(html), 'Built UI must not load remote script bundles.');
+assert(!/localStorage|sessionStorage/.test(html), 'Lead data must not be persisted in browser storage.');
+assert(!/https?:\/\/[^"']+\.(js|css)/i.test(html), 'Built UI must not depend on remote JS/CSS assets.');
+console.log(JSON.stringify({ webServerChecks: result, htmlBytes: Buffer.byteLength(html) }));

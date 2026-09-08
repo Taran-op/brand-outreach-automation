@@ -1,23 +1,44 @@
 # Brand Outreach V1
 
-Production-oriented, zero-additional-cost brand outreach automation using Google Sheets, Google Apps Script, Gmail, and the free Advanced Gmail service.
+Production-oriented, zero-additional-cost brand outreach automation using Google Sheets, Google Apps Script, Gmail, the free Advanced Gmail service, and an optional private React operator console hosted by Apps Script.
 
-Start with [ARCHITECTURE.md](ARCHITECTURE.md), then follow this guide. The complete paste-ready source is `dist/BrandOutreach.gs`; the same code is split by concern under `src/`.
+Start with [ARCHITECTURE.md](ARCHITECTURE.md), then follow this guide. The complete paste-ready server source is `dist/BrandOutreach.gs`; the same code is split by concern under `src/`. The compiled, self-contained React client is `appsscript/Index.html`. See [UI_DEPLOYMENT.md](UI_DEPLOYMENT.md) for the private web-app workflow.
 
 The delivered configuration is intentionally unable to send: `SENDS_ENABLED=false`, `DRY_RUN=true`, and `TEST_MODE=true`. The sheet initializer and all 33 deterministic safety checks were verified against a live Google Sheet. No email was sent and no automation trigger was installed.
+
+## Private React console
+
+The console is a second operator surface over the same Sheet-backed services; it is not a second CRM or database. It supports dashboard metrics, lead search/filtering, one-email-per-line or CSV import, editing, explicit approval, deterministic email previews, manual outreach jobs, recent logs, and emergency disable.
+
+- All imported rows are `NEW`; import never approves or sends.
+- Browser code has no Gmail token and never accesses the Sheet directly.
+- Every server call requires the Google account in `CONFIG.UI.ALLOWED_EMAILS`.
+- Deploy as **User accessing the web app** with access set to **Only myself**.
+- Live/test manual jobs require a typed confirmation. Dry-run jobs do not.
+- The client is bundled into one HTML file with no remote JavaScript/CSS dependency and no browser storage of lead data.
+
+Build and verify the complete project with:
+
+```bash
+npm install
+npm run check
+```
+
+The build concatenates all numeric server modules into `dist/BrandOutreach.gs` and bundles React into `appsscript/Index.html`.
 
 ## 1. Create the project from an empty Google Sheet
 
 1. Choose exactly one Gmail account as the automation owner, then create a new Google Sheet using that account. The Sheet may be shared for lead review, but no second account should install or re-enable automation.
 2. Open **Extensions → Apps Script**.
 3. In Apps Script, replace the contents of `Code.gs` with all of `dist/BrandOutreach.gs`.
-4. Do not also add the modular `src/*.gs` files; that would define every function twice. Maintainers may use the modular files instead, in numeric filename order.
-5. Open **Project Settings**, enable **Show `appsscript.json` manifest file in editor**, and replace the manifest with the supplied `appsscript.json`.
-6. Next to **Services**, click **+**, select **Gmail API**, and click **Add**. The supplied manifest also declares this service, but confirm it appears in the editor.
-7. If this script uses the default Apps Script Cloud project, adding the service enables the API automatically. If your organization attached a standard Google Cloud project, an administrator may also need to enable Gmail API in that Cloud project.
-8. In `00_Config` at the top of the combined file, replace every placeholder. Keep the safety values unchanged at first.
-9. Save, choose `setupSheet` in the function selector, and click **Run**.
-10. Return to the spreadsheet and reload it. The **Brand Outreach** menu should appear.
+4. If using the private console, add an HTML file named `Index` and replace its contents with `appsscript/Index.html`.
+5. Do not also add the modular `src/*.gs` files; that would define every function twice. Maintainers may use the modular files instead, in numeric filename order.
+6. Open **Project Settings**, enable **Show `appsscript.json` manifest file in editor**, and replace the manifest with the supplied `appsscript.json`.
+7. Next to **Services**, click **+**, select **Gmail API**, and click **Add**. The supplied manifest also declares this service, but confirm it appears in the editor.
+8. If this script uses the default Apps Script Cloud project, adding the service enables the API automatically. If your organization attached a standard Google Cloud project, an administrator may also need to enable Gmail API in that Cloud project.
+9. In `00_Config` at the top of the combined file, replace every placeholder and confirm `CONFIG.UI.ALLOWED_EMAILS`. Keep the safety values unchanged at first.
+10. Save, choose `setupSheet` in the function selector, and click **Run**.
+11. Return to the spreadsheet and reload it. The **Brand Outreach** menu should appear.
 
 `setupSheet()` is idempotent: it adds missing headers/validations and preserves existing rows. On a truly blank workbook it renames the blank first tab to `Leads` and creates `Outreach Log`.
 

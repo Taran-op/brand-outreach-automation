@@ -56,6 +56,22 @@ const CONFIG = Object.freeze({
     LOG_NAME: 'Outreach Log'
   }),
 
+  UI: Object.freeze({
+    TITLE: 'Brand Outreach Console',
+
+    // Deploy the web app as "User accessing the web app" and restrict access
+    // to yourself. Every server method also requires one of these Google
+    // account emails, so browser-side controls are never the authorization
+    // boundary.
+    ALLOWED_EMAILS: Object.freeze([
+      'taran.devx@gmail.com'
+    ]),
+    MAX_LEADS_RETURNED: 500,
+    MAX_LOG_ROWS: 80,
+    MAX_IMPORT_ROWS: 500,
+    MAX_IMPORT_CHARACTERS: 50000
+  }),
+
   FOLLOW_UP: Object.freeze({
     FIRST_AFTER_DAYS_FROM_INITIAL: 4,
     SECOND_AFTER_DAYS_FROM_INITIAL: 9,

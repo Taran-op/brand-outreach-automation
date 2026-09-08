@@ -2,7 +2,7 @@
 
 ## Outcome
 
-This is a container-bound Google Sheets + Google Apps Script + Gmail system. The spreadsheet remains the operator-controlled CRM and approval surface. There is no paid automation platform, no AI API, no runtime AI dependency, and no separate frontend.
+This is a container-bound Google Sheets + Google Apps Script + Gmail system. The spreadsheet remains the source of truth and approval ledger. A private React operator console can be served by the same Apps Script project; it is an additional view/controller, not a separate CRM or datastore. There is no paid automation platform, no AI API, and no runtime AI dependency.
 
 The shipped configuration cannot send email: `DRY_RUN=true`, `SENDS_ENABLED=false`, and `TEST_MODE=true`. The sheet initializer, preview workflow, and all 33 deterministic checks were verified in a live Google Sheet. Gmail sending, live threading, and reply detection remain deliberately untested until the operator completes the controlled mailbox checks. No email was sent and no automation trigger was installed.
 
@@ -34,8 +34,17 @@ The shipped configuration cannot send email: `DRY_RUN=true`, `SENDS_ENABLED=fals
 | `07_OutreachService.gs` | Initial/follow-up orchestration, eligibility, idempotency, persistence, and configuration checks |
 | `08_TriggersAndMenu.gs` | Sheet menu, owner/ID-verified trigger installation/removal, nonce-protected runtime kill switch, and exact pending-draft reset |
 | `09_SelfTests.gs` | No-send deterministic checks |
+| `10_WebApp.gs` | Owner-authenticated web endpoints, safe lead/import mutations, previews, manual jobs, and emergency disable |
+| `web/src` | React operator experience and local no-write mock preview |
+| `appsscript/Index.html` | Generated self-contained Apps Script HTML client |
 
-`dist/BrandOutreach.gs` combines the modules for convenient copy/paste. Use either the combined file or the modular files, never both.
+`dist/BrandOutreach.gs` combines the modules for convenient copy/paste. Use either the combined file or the modular files, never both. `npm run build` also produces the single-file React client at `appsscript/Index.html`.
+
+## Private console boundary
+
+The web client calls Apps Script through `google.script.run`; it never receives OAuth credentials and cannot directly query Gmail or Sheets. Deployments must execute as the accessing user, allow only the owner, and match the explicit `CONFIG.UI.ALLOWED_EMAILS` server allowlist. Every API method repeats that allowlist check. State-changing calls reuse the shared script lock and the existing status/duplicate/suppression services. Programmatic edits reproduce the important `onEdit` protections because simple triggers do not fire for script-written cells.
+
+The console exposes no control that edits `SENDS_ENABLED`, `DRY_RUN`, or `TEST_MODE`; changing execution mode still requires a deliberate source-code review. Live and redirected-test jobs require a typed phrase before the server invokes a worker. Import and approval remain separate actions, and neither action sends email.
 
 ## Spreadsheet schema
 

@@ -1,0 +1,25 @@
+{
+  "name": "brand-outreach-automation",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Google Apps Script brand outreach automation with a private React operator console",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:server": "node scripts/build-server.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "typecheck": "tsc -p web/tsconfig.json --noEmit",
+    "preview": "node scripts/preview.mjs",
+    "test": "node tests/test-harness.js && node tests/web-server-harness.js",
+    "check": "npm run typecheck && npm run build && npm test"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  }
+}
