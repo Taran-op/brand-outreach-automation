@@ -1,35 +1,35 @@
 /**
  * Brand Outreach V1 configuration.
  *
- * Safe shipping defaults:
- *   - DRY_RUN is true, so no Gmail draft or message can be created.
- *   - SENDS_ENABLED is false, which is a second gate for any actual send.
- *   - TEST_MODE is true, so once sending is deliberately enabled, mail is
- *     redirected to TEST_RECIPIENT until TEST_MODE is also turned off.
+ * Production profile for AsaiVerse 2027:
+ *   - Live delivery is enabled, but only through an explicit manual action.
+ *   - Initials and follow-ups are capped at one message per run/day.
+ *   - No scheduled triggers are installed by deployment.
  *
  * Change event, organization, sender, timing, and limit values here. The main
  * logic should not need editing for normal operation.
  */
 const CONFIG = Object.freeze({
-  CAMPAIGN_ID: 'JAN_EVENT_BRAND_OUTREACH_V1',
+  CAMPAIGN_ID: 'ASAIVERSE_2027_BRAND_OUTREACH_V1',
   TIME_ZONE: 'Asia/Kolkata',
 
   EVENT: Object.freeze({
-    NAME: 'REPLACE WITH EVENT NAME',
+    NAME: 'AsaiVerse',
     ONE_LINE_DESCRIPTION: 'a two-day esports, gaming, technology, creator and entertainment event',
-    DATE_DISPLAY: '30–31 January',
+    DATE_PREPOSITION: 'in',
+    DATE_DISPLAY: 'January 2027',
     LOCATION_DISPLAY: 'India',
-    ORGANIZATION: 'REPLACE WITH ORGANIZATION'
+    ORGANIZATION: ''
   }),
 
   // Final date on which outreach may be sent, in YYYY-MM-DD form. It may stay
   // blank for setup/dry-run, but configuration validation blocks actual sends
   // until the event year and cutoff are explicitly confirmed. Uses TIME_ZONE.
-  CAMPAIGN_SEND_CUTOFF_ISO: '',
+  CAMPAIGN_SEND_CUTOFF_ISO: '2027-01-31',
 
   SENDER: Object.freeze({
     NAME: 'Taran',
-    PHONE: 'REPLACE WITH PHONE',
+    PHONE: '',
     BUSINESS_EMAIL: 'taran@asaiverse.com',
 
     // Must be the Gmail account running this script or a verified Gmail
@@ -82,26 +82,26 @@ const CONFIG = Object.freeze({
 
   SAFETY: Object.freeze({
     // Actual Gmail sends require SENDS_ENABLED=true and DRY_RUN=false.
-    SENDS_ENABLED: false,
+    SENDS_ENABLED: true,
 
     // DRY_RUN takes precedence over TEST_MODE. It performs validation and
     // logging, but creates no Gmail draft and changes no lead lifecycle data.
-    DRY_RUN: true,
+    DRY_RUN: false,
 
     // When true (and DRY_RUN=false), every manual message is redirected to the
     // owned inbox below; scheduled workers refuse TEST mode. The recipient must
     // be this mailbox's primary/accepted Send-As address and must differ from
     // the lead. Production lead status/timestamps are not advanced.
-    TEST_MODE: true,
+    TEST_MODE: false,
     TEST_RECIPIENT: '',
     TEST_SUBJECT_PREFIX: '[TEST – DO NOT FORWARD]',
 
     // Shared by initial mail, follow-ups, and redirected test sends. This is
     // a message-attempt cap; Gmail quota is checked in recipient units (To + CC).
-    DAILY_SEND_LIMIT: 20,
+    DAILY_SEND_LIMIT: 1,
     GMAIL_QUOTA_RESERVE: 5,
-    MAX_INITIALS_PER_RUN: 8,
-    MAX_FOLLOW_UPS_PER_RUN: 8,
+    MAX_INITIALS_PER_RUN: 1,
+    MAX_FOLLOW_UPS_PER_RUN: 1,
     MAX_TEST_SENDS_PER_RUN: 3,
     MAX_REPLY_CHECKS_PER_RUN: 50,
 

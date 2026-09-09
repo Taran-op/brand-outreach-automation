@@ -5,35 +5,35 @@
 /**
  * Brand Outreach V1 configuration.
  *
- * Safe shipping defaults:
- *   - DRY_RUN is true, so no Gmail draft or message can be created.
- *   - SENDS_ENABLED is false, which is a second gate for any actual send.
- *   - TEST_MODE is true, so once sending is deliberately enabled, mail is
- *     redirected to TEST_RECIPIENT until TEST_MODE is also turned off.
+ * Production profile for AsaiVerse 2027:
+ *   - Live delivery is enabled, but only through an explicit manual action.
+ *   - Initials and follow-ups are capped at one message per run/day.
+ *   - No scheduled triggers are installed by deployment.
  *
  * Change event, organization, sender, timing, and limit values here. The main
  * logic should not need editing for normal operation.
  */
 const CONFIG = Object.freeze({
-  CAMPAIGN_ID: 'JAN_EVENT_BRAND_OUTREACH_V1',
+  CAMPAIGN_ID: 'ASAIVERSE_2027_BRAND_OUTREACH_V1',
   TIME_ZONE: 'Asia/Kolkata',
 
   EVENT: Object.freeze({
-    NAME: 'REPLACE WITH EVENT NAME',
+    NAME: 'AsaiVerse',
     ONE_LINE_DESCRIPTION: 'a two-day esports, gaming, technology, creator and entertainment event',
-    DATE_DISPLAY: '30–31 January',
+    DATE_PREPOSITION: 'in',
+    DATE_DISPLAY: 'January 2027',
     LOCATION_DISPLAY: 'India',
-    ORGANIZATION: 'REPLACE WITH ORGANIZATION'
+    ORGANIZATION: ''
   }),
 
   // Final date on which outreach may be sent, in YYYY-MM-DD form. It may stay
   // blank for setup/dry-run, but configuration validation blocks actual sends
   // until the event year and cutoff are explicitly confirmed. Uses TIME_ZONE.
-  CAMPAIGN_SEND_CUTOFF_ISO: '',
+  CAMPAIGN_SEND_CUTOFF_ISO: '2027-01-31',
 
   SENDER: Object.freeze({
     NAME: 'Taran',
-    PHONE: 'REPLACE WITH PHONE',
+    PHONE: '',
     BUSINESS_EMAIL: 'taran@asaiverse.com',
 
     // Must be the Gmail account running this script or a verified Gmail
@@ -86,26 +86,26 @@ const CONFIG = Object.freeze({
 
   SAFETY: Object.freeze({
     // Actual Gmail sends require SENDS_ENABLED=true and DRY_RUN=false.
-    SENDS_ENABLED: false,
+    SENDS_ENABLED: true,
 
     // DRY_RUN takes precedence over TEST_MODE. It performs validation and
     // logging, but creates no Gmail draft and changes no lead lifecycle data.
-    DRY_RUN: true,
+    DRY_RUN: false,
 
     // When true (and DRY_RUN=false), every manual message is redirected to the
     // owned inbox below; scheduled workers refuse TEST mode. The recipient must
     // be this mailbox's primary/accepted Send-As address and must differ from
     // the lead. Production lead status/timestamps are not advanced.
-    TEST_MODE: true,
+    TEST_MODE: false,
     TEST_RECIPIENT: '',
     TEST_SUBJECT_PREFIX: '[TEST – DO NOT FORWARD]',
 
     // Shared by initial mail, follow-ups, and redirected test sends. This is
     // a message-attempt cap; Gmail quota is checked in recipient units (To + CC).
-    DAILY_SEND_LIMIT: 20,
+    DAILY_SEND_LIMIT: 1,
     GMAIL_QUOTA_RESERVE: 5,
-    MAX_INITIALS_PER_RUN: 8,
-    MAX_FOLLOW_UPS_PER_RUN: 8,
+    MAX_INITIALS_PER_RUN: 1,
+    MAX_FOLLOW_UPS_PER_RUN: 1,
     MAX_TEST_SENDS_PER_RUN: 3,
     MAX_REPLY_CHECKS_PER_RUN: 50,
 
@@ -1338,8 +1338,9 @@ function buildInitialSubject_(company) {
 
 function eventOpeningLine_() {
   const location = safeDisplayText_(CONFIG.EVENT.LOCATION_DISPLAY);
+  const datePreposition = safeDisplayText_(CONFIG.EVENT.DATE_PREPOSITION) || 'on';
   return "I'm reaching out regarding " + safeDisplayText_(CONFIG.EVENT.NAME) +
-    ', ' + safeDisplayText_(CONFIG.EVENT.ONE_LINE_DESCRIPTION) + ' taking place on ' +
+    ', ' + safeDisplayText_(CONFIG.EVENT.ONE_LINE_DESCRIPTION) + ' taking place ' + datePreposition + ' ' +
     safeDisplayText_(CONFIG.EVENT.DATE_DISPLAY) + (location ? ' in ' + location : '') + '.';
 }
 
@@ -1375,7 +1376,8 @@ function buildFollowUpOne_(to, subject, greeting, company, template) {
 function buildFollowUpTwo_(to, subject, greeting, company, template) {
   const paragraphs = [
     'Hi ' + greeting + ',',
-    'One final follow-up regarding ' + safeDisplayText_(CONFIG.EVENT.NAME) + ' on ' + safeDisplayText_(CONFIG.EVENT.DATE_DISPLAY) + '.',
+    'One final follow-up regarding ' + safeDisplayText_(CONFIG.EVENT.NAME) + ' ' +
+      (safeDisplayText_(CONFIG.EVENT.DATE_PREPOSITION) || 'on') + ' ' + safeDisplayText_(CONFIG.EVENT.DATE_DISPLAY) + '.',
     template.followUp,
     'If brand partnerships or physical activations are being planned, I would be happy to share the available options. If it is not relevant right now, no problem at all.'
   ];
@@ -3408,15 +3410,16 @@ function collectConfigurationIssues_(options) {
     ['EVENT.NAME', CONFIG.EVENT.NAME],
     ['EVENT.ONE_LINE_DESCRIPTION', CONFIG.EVENT.ONE_LINE_DESCRIPTION],
     ['EVENT.DATE_DISPLAY', CONFIG.EVENT.DATE_DISPLAY],
-    ['EVENT.ORGANIZATION', CONFIG.EVENT.ORGANIZATION],
     ['SENDER.NAME', CONFIG.SENDER.NAME],
-    ['SENDER.PHONE', CONFIG.SENDER.PHONE],
     ['SENDER.BUSINESS_EMAIL', CONFIG.SENDER.BUSINESS_EMAIL]
   ].forEach(function (entry) {
     if (isPlaceholder_(entry[1])) {
       (opts.requireSend ? errors : warnings).push(entry[0] + ' still contains a placeholder.');
     }
   });
+  if (['on', 'in'].indexOf(safeDisplayText_(CONFIG.EVENT.DATE_PREPOSITION).toLowerCase()) === -1) {
+    errors.push('EVENT.DATE_PREPOSITION must be either "on" or "in".');
+  }
   if (!isValidSingleEmail_(CONFIG.SENDER.BUSINESS_EMAIL)) {
     (opts.requireSend ? errors : warnings).push('SENDER.BUSINESS_EMAIL is not a valid single email address.');
   }
@@ -4198,6 +4201,11 @@ function runSelfTests() {
       assertCondition_(message.subject.indexOf('Example Gear') !== -1, 'company missing from subject');
       assertCondition_(message.plainBody.indexOf('hands-on product demos') !== -1, 'personalization missing');
       assertCondition_(message.plainBody.toLowerCase().indexOf('opt out') !== -1, 'opt-out line missing');
+      assertCondition_(message.plainBody.indexOf('taking place in January 2027 in India') !== -1,
+        'configured month/year event timing is missing');
+      assertCondition_(message.plainBody.indexOf('30–31') === -1, 'unconfirmed exact dates leaked into the email');
+      assertCondition_(message.plainBody.indexOf('\nBest,\nTaran\ntaran@asaiverse.com\n\n') !== -1,
+        'minimal sender signature is incorrect');
     },
     function () {
       const record = makeSelfTestLead_({
@@ -4385,7 +4393,11 @@ function uiBootstrap() {
     return getInitialApprovalIssue_(record, rows, '', initialSafetyIndex, emailCounts) === '';
   }).length;
   const dailyState = getDailySendState_();
-  const issues = collectConfigurationIssues_({ requireMailbox: false, requireSend: false });
+  const mode = getExecutionMode_();
+  const issues = collectConfigurationIssues_({
+    requireMailbox: mode !== 'DRY_RUN',
+    requireSend: mode === 'LIVE'
+  });
   const ownedTriggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
     return OWNED_TRIGGER_HANDLERS.indexOf(trigger.getHandlerFunction()) !== -1;
   });
@@ -4406,7 +4418,7 @@ function uiBootstrap() {
       cc: getConfiguredCcEmails_()
     },
     safety: {
-      mode: getExecutionMode_(),
+      mode: mode,
       sendsEnabled: CONFIG.SAFETY.SENDS_ENABLED === true,
       dryRun: CONFIG.SAFETY.DRY_RUN === true,
       testMode: CONFIG.SAFETY.TEST_MODE === true,

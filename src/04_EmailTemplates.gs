@@ -96,8 +96,9 @@ function buildInitialSubject_(company) {
 
 function eventOpeningLine_() {
   const location = safeDisplayText_(CONFIG.EVENT.LOCATION_DISPLAY);
+  const datePreposition = safeDisplayText_(CONFIG.EVENT.DATE_PREPOSITION) || 'on';
   return "I'm reaching out regarding " + safeDisplayText_(CONFIG.EVENT.NAME) +
-    ', ' + safeDisplayText_(CONFIG.EVENT.ONE_LINE_DESCRIPTION) + ' taking place on ' +
+    ', ' + safeDisplayText_(CONFIG.EVENT.ONE_LINE_DESCRIPTION) + ' taking place ' + datePreposition + ' ' +
     safeDisplayText_(CONFIG.EVENT.DATE_DISPLAY) + (location ? ' in ' + location : '') + '.';
 }
 
@@ -133,7 +134,8 @@ function buildFollowUpOne_(to, subject, greeting, company, template) {
 function buildFollowUpTwo_(to, subject, greeting, company, template) {
   const paragraphs = [
     'Hi ' + greeting + ',',
-    'One final follow-up regarding ' + safeDisplayText_(CONFIG.EVENT.NAME) + ' on ' + safeDisplayText_(CONFIG.EVENT.DATE_DISPLAY) + '.',
+    'One final follow-up regarding ' + safeDisplayText_(CONFIG.EVENT.NAME) + ' ' +
+      (safeDisplayText_(CONFIG.EVENT.DATE_PREPOSITION) || 'on') + ' ' + safeDisplayText_(CONFIG.EVENT.DATE_DISPLAY) + '.',
     template.followUp,
     'If brand partnerships or physical activations are being planned, I would be happy to share the available options. If it is not relevant right now, no problem at all.'
   ];

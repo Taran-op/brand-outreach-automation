@@ -101,6 +101,11 @@ function runSelfTests() {
       assertCondition_(message.subject.indexOf('Example Gear') !== -1, 'company missing from subject');
       assertCondition_(message.plainBody.indexOf('hands-on product demos') !== -1, 'personalization missing');
       assertCondition_(message.plainBody.toLowerCase().indexOf('opt out') !== -1, 'opt-out line missing');
+      assertCondition_(message.plainBody.indexOf('taking place in January 2027 in India') !== -1,
+        'configured month/year event timing is missing');
+      assertCondition_(message.plainBody.indexOf('30–31') === -1, 'unconfirmed exact dates leaked into the email');
+      assertCondition_(message.plainBody.indexOf('\nBest,\nTaran\ntaran@asaiverse.com\n\n') !== -1,
+        'minimal sender signature is incorrect');
     },
     function () {
       const record = makeSelfTestLead_({

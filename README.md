@@ -4,7 +4,7 @@ Production-oriented, zero-additional-cost brand outreach automation using Google
 
 Start with [ARCHITECTURE.md](ARCHITECTURE.md), then follow this guide. The complete paste-ready server source is `dist/BrandOutreach.gs`; the same code is split by concern under `src/`. The compiled, self-contained React client is `appsscript/Index.html`. See [UI_DEPLOYMENT.md](UI_DEPLOYMENT.md) for the private web-app workflow.
 
-The delivered configuration is intentionally unable to send: `SENDS_ENABLED=false`, `DRY_RUN=true`, and `TEST_MODE=true`. The sheet initializer and all 33 deterministic safety checks were verified against a live Google Sheet. No email was sent and no automation trigger was installed.
+The checked-in AsaiVerse deployment is configured for manual live operation with a one-message daily/per-run cap. It does not install scheduled triggers during build or deployment. Mail is still refused unless the Gmail mailbox accepts `taran@asaiverse.com` as a verified Send-As identity and the operator explicitly approves the lead and types the live confirmation phrase.
 
 ## Private React console
 
@@ -49,8 +49,8 @@ Review every value in `CONFIG`:
 - `CAMPAIGN_ID`: stable one-line identifier for this campaign.
 - `CAMPAIGN_SEND_CUTOFF_ISO`: final send date (`YYYY-MM-DD`). It may remain blank during setup/dry-run, but actual sends are refused until you confirm the event year and set it; all initials/follow-ups stop after that local date.
 - `TIME_ZONE`: default `Asia/Kolkata`.
-- `EVENT.NAME`, `ONE_LINE_DESCRIPTION`, `DATE_DISPLAY`, `LOCATION_DISPLAY`, `ORGANIZATION`.
-- `SENDER.NAME`, `PHONE`, `BUSINESS_EMAIL`.
+- `EVENT.NAME`, `ONE_LINE_DESCRIPTION`, `DATE_PREPOSITION`, `DATE_DISPLAY`, `LOCATION_DISPLAY`, and optional `ORGANIZATION`.
+- `SENDER.NAME`, optional `PHONE`, and `BUSINESS_EMAIL`.
 - `SENDER.FROM_EMAIL`: primary Gmail address or an accepted Gmail Send-As identity.
 - `SENDER.REPLY_TO_EMAIL`: keep it in this same Gmail mailbox for reliable automatic reply checks.
 - `SENDER.CC_EMAILS`: non-empty, unique internal-team addresses included on every initial, follow-up, and redirected test message. V1 is preconfigured for `ashish@asaiverse.com` and `gaurav@asaiverse.com`.
@@ -58,7 +58,7 @@ Review every value in `CONFIG`:
 - Day-4 / Day-9 timing and minimum F1→F2 gap. These are local calendar-day comparisons in `CONFIG.TIME_ZONE`, not rolling 24-hour durations.
 - Trigger hours. Apps Script uses approximate hourly windows.
 
-The event year was not assumed. If the public event name/date should include a year, add it explicitly to `DATE_DISPLAY` before use.
+The AsaiVerse public copy currently says `January 2027` and deliberately omits unconfirmed exact dates. The internal `2027-01-31` cutoff is a conservative fail-safe, not public copy; tighten it when the event dates are confirmed.
 
 ## 3. Gmail authorization
 
@@ -175,7 +175,7 @@ The owner identity is kept in shared script properties, including after Emergenc
 
 ## 8. Go live
 
-After the checklist passes, set:
+The AsaiVerse deployment already uses this live profile:
 
 ```javascript
 SENDS_ENABLED: true,
@@ -184,6 +184,8 @@ TEST_MODE: false
 ```
 
 Begin with `DAILY_SEND_LIMIT=1` and both per-run send caps at 1. Run one manually approved lead, inspect Gmail Sent, the entire row, and `Outreach Log`, then increase conservatively. A reserved attempt counts against the run/day caps even when Gmail's response is lost or a later check cancels the unsent draft; this intentionally under-sends instead of risking a burst after an ambiguous result.
+
+The current deployment has those three limits set to 1 and should remain manual-only for the first verified send. Do not install triggers until the sender identity, sent-mail evidence, reply detection, opt-out handling, and same-thread follow-up behavior have all been confirmed with an address you control.
 
 The daily limit is a message-attempt cap shared across initials, follow-ups, and redirected tests. Gmail reports quota in recipient units, so this configuration reserves three units per message—one TO plus two CCs—and retains `GMAIL_QUOTA_RESERVE` after that reservation. Google quota remains authoritative and varies by account.
 

@@ -49,7 +49,7 @@ const mockLead: Lead = {
 
 const mockBootstrap: Bootstrap = {
   generatedAt: new Date().toISOString(), ownerEmail: 'taran.devx@gmail.com', title: 'Brand Outreach Console',
-  event: { name: 'REPLACE WITH EVENT NAME', date: '30–31 January', location: 'India', organization: 'REPLACE WITH ORGANIZATION' },
+  event: { name: 'AsaiVerse', date: 'January 2027', location: 'India', organization: '' },
   sender: { from: 'taran@asaiverse.com', replyTo: 'taran@asaiverse.com', cc: ['ashish@asaiverse.com', 'gaurav@asaiverse.com'] },
   safety: { mode: 'DRY_RUN', sendsEnabled: false, dryRun: true, testMode: true, systemDisabled: false,
     dailyLimit: 20, sentToday: 0, remainingToday: 20, triggerCount: 0, configurationErrors: [],
@@ -80,7 +80,7 @@ async function mockCall<T>(name: string, args: unknown[]): Promise<T> {
   if (name === 'uiPreviewLead') return {
     action: 'INITIAL', to: mockLead.email, cc: mockBootstrap.sender.cc,
     subject: `${mockLead.company} × ${mockBootstrap.event.name} — Brand Activation Opportunity`,
-    body: `Hi Partnerships Team,\n\nI'm reaching out regarding ${mockBootstrap.event.name}, a two-day esports, gaming, technology, creator and entertainment event taking place on 30–31 January in India.\n\nThe event brings together gamers and esports audiences in an environment designed for hands-on product demos, trials and playable brand experiences.\n\nWe're currently opening exhibition and brand activation spaces for selected brands interested in reaching this audience.\n\nWould you be open to a quick conversation?\n\nBest,\nTaran\nREPLACE WITH ORGANIZATION\nREPLACE WITH PHONE\ntaran@asaiverse.com\n\nIf you would prefer not to receive further messages about this event, reply “opt out” and we will update our list.`,
+    body: `Hi Partnerships Team,\n\nI'm reaching out regarding ${mockBootstrap.event.name}, a two-day esports, gaming, technology, creator and entertainment event taking place in January 2027 in India.\n\nThe event brings together gamers and esports audiences in an environment designed for hands-on product demos, trials and playable brand experiences.\n\nWe're currently opening exhibition and brand activation spaces for selected brands interested in reaching this audience.\n\nWould you be open to a quick conversation?\n\nBest,\nTaran\ntaran@asaiverse.com\n\nIf you would prefer not to receive further messages about this event, reply “opt out” and we will update our list.`,
     warnings: ['Local preview data — no message can be sent from this page.']
   } as T;
   if (name === 'uiRunJob') return { job: String(args[0]), mode: 'DRY_RUN', processed: 1, sent: 0, dryRun: 1, testSent: 0, skipped: 0, replies: 0, errors: 0, message: 'Local preview completed.' } as T;
@@ -216,7 +216,9 @@ function App() {
 
   const isLocal = !window.google?.script?.run;
   const mode = data?.safety.mode || 'UNKNOWN';
-  const modeLabel = data?.safety.systemDisabled ? 'SYSTEM DISABLED' : mode === 'DRY_RUN' ? 'DRY RUN — DELIVERY LOCKED' : mode;
+  const configurationBlocked = !!data?.safety.configurationErrors.length;
+  const jobsBlocked = !!busy || !!data?.safety.systemDisabled || (mode !== 'DRY_RUN' && configurationBlocked);
+  const modeLabel = data?.safety.systemDisabled ? 'SYSTEM DISABLED' : configurationBlocked && mode === 'LIVE' ? 'LIVE — CONFIGURATION BLOCKED' : mode === 'DRY_RUN' ? 'DRY RUN — DELIVERY LOCKED' : mode === 'LIVE' ? 'LIVE — MANUAL SENDS ENABLED' : mode;
   const jobPhrase = mode === 'LIVE' ? (pendingJob === 'INITIALS' ? 'SEND APPROVED' : pendingJob === 'FOLLOW_UPS' ? 'SEND FOLLOW UPS' : 'CHECK REPLIES') : mode === 'TEST' ? 'SEND TEST' : '';
 
   return <div className="shell">
@@ -235,7 +237,7 @@ function App() {
 
       <section id="overview" className="safety-card">
         <div className={`safety-icon ${data?.safety.systemDisabled ? 'danger' : 'safe'}`}><Icon name="shield" size={26}/></div>
-        <div className="safety-copy"><span className="eyebrow">CURRENT DELIVERY STATE</span><h2>{modeLabel}</h2><p>{mode === 'DRY_RUN' ? 'Jobs validate eligibility and write minimal audit entries. Gmail is not read and no draft or message is created.' : data?.safety.systemDisabled ? 'The shared runtime kill switch blocks outreach jobs.' : 'Review the mode and confirmation carefully before running a job.'}</p></div>
+        <div className="safety-copy"><span className="eyebrow">CURRENT DELIVERY STATE</span><h2>{modeLabel}</h2><p>{mode === 'DRY_RUN' ? 'Jobs validate eligibility and write minimal audit entries. Gmail is not read and no draft or message is created.' : data?.safety.systemDisabled ? 'The shared runtime kill switch blocks outreach jobs.' : configurationBlocked ? 'Mailbox readiness must pass before any Gmail job can run.' : 'Manual jobs can send one message per day after typed confirmation. No scheduled triggers are installed.'}</p></div>
         <div className="safety-facts"><div><span>Today</span><strong>{data?.safety.sentToday} / {data?.safety.dailyLimit}</strong></div><div><span>Triggers</span><strong>{data?.safety.triggerCount}</strong></div><div><span>CC / email</span><strong>{data?.sender.cc.length}</strong></div></div>
         <button className="danger-button" onClick={() => setModal('disable')}><Icon name="alert"/>Emergency disable</button>
       </section>
@@ -265,7 +267,7 @@ function App() {
           {data?.truncated && <p className="footnote">Showing the first {data.leads.length} records. Use the source Sheet for the complete list.</p>}
         </div>
 
-        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.</p><button onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
+        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.</p><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
       </section>
 
       <section id="activity" className="panel activity-panel"><div className="panel-head"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Recent activity</h2></div><span className="muted-text">Latest {data?.logs.length || 0} events</span></div><div className="activity-list">{data?.logs.map((item, i) => <article key={`${item.timestamp}-${i}`}><span className={`activity-dot ${statusTone(item.result)}`}/><div><strong>{item.action} · {item.result}</strong><p>{item.message}</p><small>{item.company || item.email || 'System'} · {formatDate(item.timestamp)}</small></div></article>)}{!data?.logs.length && <p className="empty">No log entries yet.</p>}</div></section>

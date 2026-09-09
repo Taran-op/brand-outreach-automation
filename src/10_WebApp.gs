@@ -60,7 +60,11 @@ function uiBootstrap() {
     return getInitialApprovalIssue_(record, rows, '', initialSafetyIndex, emailCounts) === '';
   }).length;
   const dailyState = getDailySendState_();
-  const issues = collectConfigurationIssues_({ requireMailbox: false, requireSend: false });
+  const mode = getExecutionMode_();
+  const issues = collectConfigurationIssues_({
+    requireMailbox: mode !== 'DRY_RUN',
+    requireSend: mode === 'LIVE'
+  });
   const ownedTriggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
     return OWNED_TRIGGER_HANDLERS.indexOf(trigger.getHandlerFunction()) !== -1;
   });
@@ -81,7 +85,7 @@ function uiBootstrap() {
       cc: getConfiguredCcEmails_()
     },
     safety: {
-      mode: getExecutionMode_(),
+      mode: mode,
       sendsEnabled: CONFIG.SAFETY.SENDS_ENABLED === true,
       dryRun: CONFIG.SAFETY.DRY_RUN === true,
       testMode: CONFIG.SAFETY.TEST_MODE === true,

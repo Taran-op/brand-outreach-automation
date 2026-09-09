@@ -932,15 +932,16 @@ function collectConfigurationIssues_(options) {
     ['EVENT.NAME', CONFIG.EVENT.NAME],
     ['EVENT.ONE_LINE_DESCRIPTION', CONFIG.EVENT.ONE_LINE_DESCRIPTION],
     ['EVENT.DATE_DISPLAY', CONFIG.EVENT.DATE_DISPLAY],
-    ['EVENT.ORGANIZATION', CONFIG.EVENT.ORGANIZATION],
     ['SENDER.NAME', CONFIG.SENDER.NAME],
-    ['SENDER.PHONE', CONFIG.SENDER.PHONE],
     ['SENDER.BUSINESS_EMAIL', CONFIG.SENDER.BUSINESS_EMAIL]
   ].forEach(function (entry) {
     if (isPlaceholder_(entry[1])) {
       (opts.requireSend ? errors : warnings).push(entry[0] + ' still contains a placeholder.');
     }
   });
+  if (['on', 'in'].indexOf(safeDisplayText_(CONFIG.EVENT.DATE_PREPOSITION).toLowerCase()) === -1) {
+    errors.push('EVENT.DATE_PREPOSITION must be either "on" or "in".');
+  }
   if (!isValidSingleEmail_(CONFIG.SENDER.BUSINESS_EMAIL)) {
     (opts.requireSend ? errors : warnings).push('SENDER.BUSINESS_EMAIL is not a valid single email address.');
   }
