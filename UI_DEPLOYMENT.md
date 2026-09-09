@@ -41,6 +41,8 @@ Never commit `.clasprc.json` or any OAuth token. It is ignored by Git.
 6. Deploy and complete the Google authorization flow while signed into the allowlisted account.
 7. Open the deployment URL. The header must show the allowlisted Google account and the expected safety mode.
 
+The manifest includes `userinfo.email` because the server-side allowlist deliberately verifies `Session.getActiveUser().getEmail()` on every console call.
+
 Do not choose public/anonymous access. `doGet` and every callable method reject accounts outside the server allowlist, but deployment access is an additional required boundary.
 
 ## Safe acceptance test
