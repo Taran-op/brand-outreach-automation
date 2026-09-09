@@ -19,6 +19,18 @@ For a local visual preview, run `npm run preview` after the build and open `http
 4. Confirm `CONFIG.UI.ALLOWED_EMAILS` contains only the intended Google account.
 5. Save the project and run `runSelfTests` from the editor. This sends no email.
 
+### Maintainer deployment with clasp
+
+The repository is preconfigured for the existing Apps Script project in `.clasp.json`. The generated `gas/` directory contains the only three files uploaded by clasp.
+
+1. Run `npx clasp login` once and complete Google's sign-in in your browser.
+2. If Google reports the Apps Script API is disabled, enable it at `https://script.google.com/home/usersettings` and retry.
+3. Run `npm run gas:status` and confirm only `Code.gs`, `Index.html`, and `appsscript.json` are listed.
+4. Run `npm run gas:push`. This rebuilds and tests before uploading.
+5. Run `npm run gas:deploy` to create the web-app deployment, or update the existing deployment from the Apps Script deployment screen.
+
+Never commit `.clasprc.json` or any OAuth token. It is ignored by Git.
+
 ## Deploy privately
 
 1. Choose **Deploy → New deployment**.

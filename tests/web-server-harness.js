@@ -53,4 +53,6 @@ assert(html.includes('DRY RUN'), 'Built UI must visibly represent dry-run safety
 assert(!/<script[^>]+src=/i.test(html), 'Built UI must not load remote script bundles.');
 assert(!/localStorage|sessionStorage/.test(html), 'Lead data must not be persisted in browser storage.');
 assert(!/https?:\/\/[^"']+\.(js|css)/i.test(html), 'Built UI must not depend on remote JS/CSS assets.');
+assert.strictEqual(fs.readFileSync(path.join(root, 'gas', 'Index.html'), 'utf8'), html, 'Clasp HTML staging must match the tested bundle.');
+assert.strictEqual(fs.readFileSync(path.join(root, 'gas', 'Code.gs'), 'utf8'), fs.readFileSync(path.join(root, 'dist', 'BrandOutreach.gs'), 'utf8'), 'Clasp server staging must match the tested bundle.');
 console.log(JSON.stringify({ webServerChecks: result, htmlBytes: Buffer.byteLength(html) }));

@@ -9,6 +9,9 @@
     "build:web": "node scripts/build-web.mjs",
     "typecheck": "tsc -p web/tsconfig.json --noEmit",
     "preview": "node scripts/preview.mjs",
+    "gas:status": "clasp status",
+    "gas:push": "npm run check && clasp push --force",
+    "gas:deploy": "clasp deploy --description \"Private operator console V1\"",
     "test": "node tests/test-harness.js && node tests/web-server-harness.js",
     "check": "npm run typecheck && npm run build && npm test"
   },
@@ -17,6 +20,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@google/clasp": "^3.0.6",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "esbuild": "0.28.2",

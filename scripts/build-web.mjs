@@ -27,6 +27,12 @@ const [template, css, javascript] = await Promise.all([
 const html = template
   .replace('/*__INLINE_CSS__*/', css)
   .replace('/*__INLINE_JS__*/', javascript);
-await mkdir(join(root, 'appsscript'), { recursive: true });
-await writeFile(join(root, 'appsscript', 'Index.html'), html, 'utf8');
+await Promise.all([
+  mkdir(join(root, 'appsscript'), { recursive: true }),
+  mkdir(join(root, 'gas'), { recursive: true })
+]);
+await Promise.all([
+  writeFile(join(root, 'appsscript', 'Index.html'), html, 'utf8'),
+  writeFile(join(root, 'gas', 'Index.html'), html, 'utf8')
+]);
 console.log(`Built appsscript/Index.html (${Math.round(Buffer.byteLength(html) / 1024)} KiB).`);
