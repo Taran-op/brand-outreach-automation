@@ -30,13 +30,15 @@ export const CONFIG = {
     DATE_PREPOSITION: 'in',
     DATE_DISPLAY: 'January 2027',
     LOCATION_DISPLAY: 'India',
-    ORGANIZATION: ''
+    ORGANIZATION: 'Asaiverse'
   },
 
   CAMPAIGN_SEND_CUTOFF_ISO: '2027-01-31',
 
   SENDER: {
     NAME: 'Taran',
+    TITLE: 'Lead – Brand Connect',
+    SIGN_OFF: 'Warm regards,',
     PHONE: '',
     BUSINESS_EMAIL: 'taran@asaiverse.com',
     FROM_EMAIL: 'taran@asaiverse.com',

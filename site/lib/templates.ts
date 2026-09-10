@@ -1,10 +1,16 @@
 /**
- * Port of src/04_EmailTemplates.gs.
+ * Email copy. Originally a port of src/04_EmailTemplates.gs.
  *
- * Copy is deterministic: the category and the operator-written
- * Personalization cell select and insert approved text. Nothing is generated
- * at runtime. Wording must stay byte-identical to the Apps Script templates so
- * a lead previewed in one console and sent from the other reads the same.
+ * Copy is deterministic: no text is generated at runtime. The only per-lead
+ * variation is the greeting and the operator-written Personalization cell.
+ *
+ * The initial email now carries the approved Emailer document and no longer
+ * matches the Apps Script version, which still sends the older, shorter pitch.
+ * The two must not both be used for first contact — this console is the one
+ * with the current copy.
+ *
+ * Follow-up 1 and 2 remain the original wording, including the per-category
+ * sentence, because the document did not replace them.
  */
 
 import { CONFIG } from './config';
@@ -144,21 +150,38 @@ const customPersonalizationLine = (company: string, personalization: string): st
   return `One reason I thought ${company || 'your team'} could be a strong fit: ${ensureTerminalPunctuation(personalization)}`;
 };
 
-function finishEmail(to: string, subject: string, action: ActionValue, paragraphs: string[]): OutreachMessage {
+/** A body block is either a paragraph or a bulleted list. */
+export type Block = string | { bullets: string[] };
+
+function finishEmail(to: string, subject: string, action: ActionValue, blocks: Block[]): OutreachMessage {
   const signatureLines = [
-    'Best,',
+    safeDisplayText(CONFIG.SENDER.SIGN_OFF),
     safeDisplayText(CONFIG.SENDER.NAME),
+    safeDisplayText(CONFIG.SENDER.TITLE),
     safeDisplayText(CONFIG.EVENT.ORGANIZATION),
     safeDisplayText(CONFIG.SENDER.PHONE),
     safeDisplayText(CONFIG.SENDER.BUSINESS_EMAIL)
   ].filter(Boolean);
 
+  // This exact sentence is the anchor reply detection uses to find where our
+  // own words end and a quoted reply begins. Changing it silently breaks
+  // opt-out handling, so it stays verbatim — see OWN_FOOTER in replies.ts.
   const optOut =
     'If you would prefer not to receive further messages about this event, reply “opt out” and we will update our list.';
-  const plainBody = `${paragraphs.join('\n\n')}\n\n${signatureLines.join('\n')}\n\n${optOut}`;
 
-  const htmlParagraphs = paragraphs
-    .map((paragraph) => `<p style="margin:0 0 14px 0">${paragraphToHtml(paragraph)}</p>`)
+  const plainBlocks = blocks.map((block) =>
+    typeof block === 'string' ? block : block.bullets.map((item) => `• ${item}`).join('\n')
+  );
+  const plainBody = `${plainBlocks.join('\n\n')}\n\n${signatureLines.join('\n')}\n\n${optOut}`;
+
+  const htmlParagraphs = blocks
+    .map((block) =>
+      typeof block === 'string'
+        ? `<p style="margin:0 0 14px 0">${paragraphToHtml(block)}</p>`
+        : `<ul style="margin:0 0 14px 0;padding-left:20px">${block.bullets
+            .map((item) => `<li style="margin:0 0 4px 0">${htmlEscape(item)}</li>`)
+            .join('')}</ul>`
+    )
     .join('');
   const htmlSignature = `<p style="margin:0 0 14px 0">${signatureLines.map(htmlEscape).join('<br>')}</p>`;
   const htmlOptOut = `<p style="margin:20px 0 0 0;color:#64748b;font-size:12px">${htmlEscape(optOut)}</p>`;
@@ -206,21 +229,84 @@ export function buildEmailForLead(record: LeadRecord, action: ActionValue): Outr
     ]);
   }
 
-  return finishEmail(
-    to,
-    subject,
-    ACTION.INITIAL,
-    [
-      `Hi ${greeting},`,
-      eventOpeningLine(),
-      template.initial,
-      customPersonalizationLine(company, personalization),
-      "We're currently opening exhibition and brand activation spaces for selected brands interested in reaching this audience.",
-      `I'd be glad to share our stall options, audience plan and collaboration opportunities if this is relevant for ${company || 'your team'}.`,
-      'Would you be open to a quick conversation?'
-    ].filter(Boolean)
-  );
+  return buildInitialEmail(to, subject, greeting, company, personalization);
 }
+
+/**
+ * The initial pitch, from the approved Emailer document.
+ *
+ * The event name is interpolated rather than written literally so the subject
+ * line and the body cannot drift apart in spelling. The operator-written
+ * Personalization cell is inserted before the ask, where a specific reason
+ * lands best; leads without one simply skip it.
+ */
+function buildInitialEmail(
+  to: string,
+  subject: string,
+  greeting: string,
+  company: string,
+  personalization: string
+): OutreachMessage {
+  const event = safeDisplayText(CONFIG.EVENT.NAME);
+
+  return finishEmail(to, subject, ACTION.INITIAL, [
+    `Dear ${greeting},`,
+    'Most gaming events in India bring audiences together to watch.',
+    `${event} is being built to make them participate.`,
+    `${event} is India's next-generation gaming and youth culture festival, bringing together esports, technology, creators, entertainment, music, food, and digital communities under one immersive ecosystem.`,
+    'The upcoming edition is expected to attract 30,000+ attendees, but what makes this audience unique is its composition.',
+
+    '15,000+ Competitive Gamers',
+    `Unlike conventional esports events where online qualifiers culminate in an on-ground final, ${event} will host the entire competitive journey physically at the venue.`,
+    `From registrations and qualifiers to playoffs and championships, more than 15,000 players are expected to compete on-ground, making ${event} one of the few gaming festivals globally where brands can engage with thousands of active participants rather than just spectators.`,
+
+    '15,000+ Festival Visitors',
+    `Alongside competitive gaming, ${event} is designed as a large-scale consumer festival featuring:`,
+    {
+      bullets: [
+        'Technology & Gaming Exhibition Zones',
+        'Creator Meet & Greet Experiences',
+        'Food Festival',
+        'Cosplay Activations',
+        'Indie Gaming Showcase',
+        'Live Entertainment & Rock Concerts',
+        'Community Experiences & Fan Engagement Activities'
+      ]
+    },
+    'These attractions are expected to draw an additional 15,000+ visitors, creating a diverse audience of students, professionals, creators, gamers, and technology enthusiasts.',
+
+    '100+ Creators Under One Roof',
+    `${event} will bring together 100+ gaming, technology, lifestyle, and entertainment creators, creating one of the largest creator gatherings within a gaming festival environment.`,
+    'For brands, this means access not only to on-ground audiences but also to creator-led amplification across social media platforms through content creation, product integration, live streams, challenges, and branded collaborations.',
+
+    'Direct Access to 400+ Colleges',
+    `Through the ${event} Campus Ambassador Program, the festival is expected to establish direct engagement across 400+ colleges in Delhi NCR, with expansion planned across multiple cities in future editions.`,
+    "This network creates year-round touchpoints with student communities and enables partner brands to activate directly within India's most influential youth demographic.",
+
+    'Why Brands Are Taking Notice',
+    `${event} combines:`,
+    {
+      bullets: [
+        '30,000+ total attendees',
+        '15,000+ competitive gamers',
+        '15,000+ festival visitors',
+        '100+ creators and influencers',
+        '400+ colleges in Delhi NCR',
+        'Multi-city expansion roadmap',
+        'Integrated digital campaigns',
+        'Radio promotions and media partnerships',
+        'Experiential activations and product showcases'
+      ]
+    },
+    `In a market where consumer attention is increasingly fragmented, ${event} offers brands a rare opportunity to engage gaming audiences, youth communities, creators, technology enthusiasts, and students through a single platform.`,
+
+    `We are currently inviting a limited number of brands to join ${event} as Sponsorship, Experience, Technology, and Category Partners.`,
+    customPersonalizationLine(company, personalization),
+    `We would be delighted to present the sponsorship opportunities and explore how ${event} can help achieve your brand's engagement and growth objectives.`,
+    'Would you be available for a brief discussion next week?'
+  ].filter(Boolean) as Block[]);
+}
+
 
 const hasInitialSuccessEvidence = (record: LeadRecord): boolean =>
   Boolean(
