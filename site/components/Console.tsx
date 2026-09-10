@@ -33,18 +33,26 @@ type ImportResult = { imported: number; withoutEmail: number; skipped: { row: nu
 type WorkbookSheet = { name: string; rows: string[][] };
 type WorkbookUpload = { fileName: string; fileBytes: number; sheets: WorkbookSheet[] };
 
-/** Endpoints this console can reach. Anything absent is not ported yet. */
-const SERVER_ROUTES: Record<string, string> = {
-  uiBootstrap: '/api/console/bootstrap',
-  uiPreviewLead: '/api/console/preview',
-  uiSaveLead: '/api/console/lead',
-  uiBulkApprove: '/api/console/approve',
-  uiImportLeads: '/api/console/import',
-  uiImportWorkbook: '/api/console/import-workbook',
-  uiRunJob: '/api/console/job',
-  uiEmergencyDisable: '/api/console/disable',
-  uiEnrichLeads: '/api/console/enrich',
-  uiSendTest: '/api/console/test-send'
+/**
+ * Endpoints this console can reach, each declaring its own method.
+ *
+ * The method is declared rather than inferred from whether a call has
+ * arguments. An action that takes none is still an action, and guessing GET
+ * for it sent enrichment and emergency disable to POST-only handlers.
+ */
+type Route = { path: string; method: 'GET' | 'POST' };
+
+const SERVER_ROUTES: Record<string, Route> = {
+  uiBootstrap: { path: '/api/console/bootstrap', method: 'GET' },
+  uiPreviewLead: { path: '/api/console/preview', method: 'POST' },
+  uiSaveLead: { path: '/api/console/lead', method: 'POST' },
+  uiBulkApprove: { path: '/api/console/approve', method: 'POST' },
+  uiImportLeads: { path: '/api/console/import', method: 'POST' },
+  uiImportWorkbook: { path: '/api/console/import-workbook', method: 'POST' },
+  uiRunJob: { path: '/api/console/job', method: 'POST' },
+  uiEmergencyDisable: { path: '/api/console/disable', method: 'POST' },
+  uiEnrichLeads: { path: '/api/console/enrich', method: 'POST' },
+  uiSendTest: { path: '/api/console/test-send', method: 'POST' }
 };
 
 /**
@@ -60,9 +68,11 @@ async function callServer<T>(name: string, ...args: unknown[]): Promise<T> {
     );
   }
 
-  const sendsBody = args.length > 0;
-  const response = await fetch(route, {
-    method: sendsBody ? 'POST' : 'GET',
+  // A POST route always gets a body, even an empty args array, so the handler
+  // can parse it uniformly.
+  const sendsBody = route.method === 'POST';
+  const response = await fetch(route.path, {
+    method: route.method,
     headers: sendsBody ? { 'Content-Type': 'application/json' } : undefined,
     body: sendsBody ? JSON.stringify({ args }) : undefined,
     cache: 'no-store'
