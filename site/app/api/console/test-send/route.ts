@@ -82,7 +82,12 @@ export async function POST(request: Request) {
         cc: test.cc,
         subject: test.subject,
         threadId: sent.threadId,
-        message: `Test sent to ${test.to} with ${test.cc.length} CC. No lead was contacted and no lead state changed.`
+        message:
+          `Test sent to ${test.to}, CC ${test.cc.join(', ') || 'none'}. ` +
+          `Built from "${safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY)) || 'the first lead'}"` +
+          `${intended ? `, whose real address is ${intended}` : ''}. ` +
+          'The body is identical to production; only the subject carries a [TEST] marker. ' +
+          'No lead was contacted and no lead state changed.'
       });
     } catch (error) {
       // A test that failed to send must not leave a stray draft behind.

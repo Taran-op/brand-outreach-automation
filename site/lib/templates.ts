@@ -410,18 +410,17 @@ export function buildTestEnvelope(
     throw new Error('The test recipient matches the real lead address; redirected test refused.');
   }
 
-  const notice =
-    `TEST MODE — intended production recipient: ${normalizeEmail(intendedRecipient) || '(none)'}. ` +
-    'No lead state was changed and no brand was contacted.';
-
+  // The body is left byte-identical to production so the test shows exactly
+  // what a brand receives. Only the subject is marked, which is enough to stop
+  // the CC'd colleagues mistaking it for real outreach in an inbox list, and
+  // the intended recipient is reported to the console rather than written into
+  // the message where it would corrupt the preview.
   return {
     action: message.action,
     to,
     cc: configuredCcEmails(),
-    subject: `[TEST – DO NOT FORWARD] [${message.action}] ${message.subject}`,
-    plainBody: `${notice}\n\n${message.plainBody}`,
-    htmlBody:
-      '<div style="padding:10px;margin-bottom:16px;background:#fef3c7;border:1px solid #f59e0b">' +
-      `${htmlEscape(notice)}</div>${message.htmlBody}`
+    subject: `[TEST] ${message.subject}`,
+    plainBody: message.plainBody,
+    htmlBody: message.htmlBody
   };
 }
