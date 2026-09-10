@@ -2,6 +2,7 @@ import { CONFIG, spreadsheetUrl } from '@/lib/config';
 import { CATEGORY_VALUES, STATUS_VALUES } from '@/lib/constants';
 import { summarize, toLead } from '@/lib/leads';
 import { getLeadRows, getLogEntries } from '@/lib/sheets';
+import { campaignWindowOpen, countSentToday, sendsArmed } from '@/lib/send';
 import { errorResponse, requireOperator } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,8 @@ export async function GET() {
     const allLeads = records.map((record) => toLead(record, now));
     const { statusCounts, metrics } = summarize(allLeads);
     const leads = allLeads.slice(0, CONFIG.UI.MAX_LEADS_RETURNED);
+    const armed = sendsArmed() && campaignWindowOpen(now);
+    const sentToday = countSentToday(records, now);
 
     return Response.json({
       generatedAt: now.toISOString(),
@@ -40,16 +43,16 @@ export async function GET() {
         maxFileBytes: CONFIG.UI.MAX_IMPORT_FILE_BYTES
       },
       safety: {
-        // Editing, approving and importing write to the Sheet from here.
-        // Delivery is still the Apps Script deployment's job.
-        mode: 'MANAGE_ONLY',
-        sendsEnabled: false,
+        // Sending is armed by an explicit environment flag, so a deploy alone
+        // can never make this console capable of delivery.
+        mode: armed ? 'LIVE' : 'MANAGE_ONLY',
+        sendsEnabled: armed,
         dryRun: false,
         testMode: false,
         systemDisabled: false,
         dailyLimit: CONFIG.SAFETY.DAILY_SEND_LIMIT,
-        sentToday: 0,
-        remainingToday: 0,
+        sentToday,
+        remainingToday: armed ? Math.max(0, CONFIG.SAFETY.DAILY_SEND_LIMIT - sentToday) : 0,
         triggerCount: 0,
         // Reserved for genuine problems that would block a live send. Being
         // read-only is not one — the banner above the dashboard already says

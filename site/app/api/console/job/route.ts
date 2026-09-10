@@ -1,0 +1,45 @@
+import { CONFIG } from '@/lib/config';
+import { dueFollowUpAction } from '@/lib/leads';
+import { readArgs } from '@/lib/request';
+import { runSendJob } from '@/lib/send';
+import { errorResponse, requireOperator } from '@/lib/session';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+// Sending is sequential and talks to two Google APIs per lead.
+export const maxDuration = 300;
+
+const CONFIRMATION: Record<string, string> = {
+  INITIALS: 'SEND APPROVED',
+  FOLLOW_UPS: 'SEND FOLLOW UPS'
+};
+
+/**
+ * Runs one outreach job. The typed confirmation is re-checked here, not just
+ * in the browser, so a stray API call cannot start a send.
+ */
+export async function POST(request: Request) {
+  try {
+    const operator = await requireOperator();
+    const [rawJob, rawConfirmation] = await readArgs(request);
+    const job = String(rawJob || '').toUpperCase();
+
+    if (job === 'REPLIES') {
+      throw Object.assign(
+        new Error('Reply checking is not ported yet — run it from the Apps Script deployment.'),
+        { status: 501 }
+      );
+    }
+    if (job !== 'INITIALS' && job !== 'FOLLOW_UPS') throw new Error('Unknown job.');
+
+    const phrase = CONFIRMATION[job];
+    if (String(rawConfirmation || '').trim().toUpperCase() !== phrase) {
+      throw new Error(`Type ${phrase} to confirm this job.`);
+    }
+
+    const summary = await runSendJob(operator.accessToken, job, dueFollowUpAction);
+    return Response.json({ ...summary, dailyLimit: CONFIG.SAFETY.DAILY_SEND_LIMIT });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}

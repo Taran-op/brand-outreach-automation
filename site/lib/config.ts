@@ -67,13 +67,14 @@ export const CONFIG = {
 
   SAFETY: {
     /**
-     * The Next.js console does not send mail yet. This flag exists so the
-     * value is explicit rather than implied, and so the UI can state the
-     * delivery position honestly. Sending stays with the Apps Script
-     * deployment until the send path is ported with its locking intact.
+     * Sending is armed by the CONSOLE_SENDS_ENABLED environment variable, not
+     * by source, so a deploy alone can never make this console capable of
+     * delivery. These caps then bound what an armed run may do; they mirror
+     * the Apps Script values deliberately.
      */
-    SENDS_ENABLED: false,
     DAILY_SEND_LIMIT: 1,
+    MAX_INITIALS_PER_RUN: 1,
+    MAX_FOLLOW_UPS_PER_RUN: 1,
     MAX_LOG_MESSAGE_LENGTH: 500
   }
 } as const;

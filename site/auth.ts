@@ -3,22 +3,26 @@ import Google from 'next-auth/providers/google';
 import { isAllowedEmail } from './lib/config';
 
 /**
- * Only what this console actually uses today: sign-in identity and the
- * campaign spreadsheet.
+ * Sign-in identity, the campaign spreadsheet, and the mailbox.
  *
- * The Gmail scopes are deliberately absent. gmail.readonly is a *restricted*
- * scope, which is the strictest tier Google applies and the one most likely to
- * be refused outright on an unverified project. Since nothing here sends mail
- * or reads a mailbox yet, asking for it buys nothing and costs consent
- * friction. Add 'https://www.googleapis.com/auth/gmail.send' back with the
- * send path, and gmail.readonly with reply detection — each will require a
- * one-time re-consent, which is the correct trade.
+ * The three Gmail scopes are each load-bearing, not convenience:
+ *  - compose   creates the draft that makes an interrupted send recoverable
+ *  - readonly  reads the attempt-id header back, to prove a send happened once
+ *  - settings  confirms FROM_EMAIL is a verified Send-As, so Gmail cannot
+ *              silently rewrite the sender to the personal Gmail address
+ *
+ * These are Google's "restricted" tier. They work while the OAuth consent
+ * screen is in Testing with the operator as a test user, which is the intended
+ * end state here — publishing would demand full verification instead.
  */
 export const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
-  'https://www.googleapis.com/auth/spreadsheets'
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.settings.basic'
 ].join(' ');
 
 /** Exchanges a refresh token for a fresh access token. */
