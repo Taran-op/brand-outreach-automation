@@ -116,6 +116,26 @@ export const isAllowedEmail = (value: unknown): boolean => {
   return allowedEmails().some((allowed) => canonicalEmail(allowed) === candidate);
 };
 
+/**
+ * The account whose Gmail mailbox *is* the campaign mailbox.
+ *
+ * Every operator acts as themselves, so mail operations are not
+ * interchangeable between them: a send from a colleague would leave their
+ * mailbox with the wrong Send-As, and a reply scan run by a colleague would
+ * search their inbox for threads that live in the owner's. Mail operations are
+ * therefore restricted to this one account, while lead management stays open
+ * to everyone on the allowlist. Defaults to the first allowlisted address.
+ */
+export const mailboxOwner = (): string => {
+  const configured = String(process.env.CONSOLE_MAILBOX_OWNER || '').trim().toLowerCase();
+  return configured || allowedEmails()[0];
+};
+
+export const isMailboxOwner = (value: unknown): boolean => {
+  const candidate = String(value ?? '').trim().toLowerCase();
+  return Boolean(candidate) && canonicalEmail(candidate) === canonicalEmail(mailboxOwner());
+};
+
 /** Spreadsheet that remains the source of truth and approval ledger. */
 export const spreadsheetId = (): string => requiredEnv('SHEET_ID');
 

@@ -6,7 +6,7 @@ import { readArgs } from '@/lib/request';
 import { campaignWindowOpen, sendsArmed } from '@/lib/send';
 import { getLeadRows, leadValue } from '@/lib/sheets';
 import { appendLogRow } from '@/lib/sheets-write';
-import { errorResponse, requireOperator } from '@/lib/session';
+import { errorResponse, requireMailboxOwner } from '@/lib/session';
 import { buildEmailForLead, buildTestEnvelope, determinePreviewAction } from '@/lib/templates';
 import { normalizeEmail, safeDisplayText } from '@/lib/text';
 
@@ -25,7 +25,7 @@ export const maxDuration = 120;
  */
 export async function POST(request: Request) {
   try {
-    const operator = await requireOperator();
+    const operator = await requireMailboxOwner();
     const [rawId] = await readArgs(request).catch(() => [undefined]);
 
     if (!sendsArmed()) throw Object.assign(new Error('Sending is not armed on this deployment.'), { status: 409 });

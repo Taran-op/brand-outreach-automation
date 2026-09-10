@@ -1,5 +1,5 @@
 import { auth } from '@/auth';
-import { isAllowedEmail } from './config';
+import { isAllowedEmail, isMailboxOwner, mailboxOwner } from './config';
 
 export type Operator = {
   email: string;
@@ -36,6 +36,23 @@ export async function requireOperator(): Promise<Operator> {
   }
 
   return { email, accessToken: session.accessToken };
+}
+
+/**
+ * For operations that touch the campaign mailbox. Lead management is open to
+ * every allowlisted operator; sending and reply scanning are not, because they
+ * only make sense from the mailbox that holds the threads.
+ */
+export async function requireMailboxOwner(): Promise<Operator> {
+  const operator = await requireOperator();
+  if (!isMailboxOwner(operator.email)) {
+    throw new AuthorizationError(
+      `Mail operations run from the campaign mailbox (${mailboxOwner()}). ` +
+        `You are signed in as ${operator.email}, so you can manage leads but not send or scan replies.`,
+      403
+    );
+  }
+  return operator;
 }
 
 export function errorResponse(error: unknown): Response {

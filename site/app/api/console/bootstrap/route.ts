@@ -1,4 +1,4 @@
-import { CONFIG, spreadsheetUrl } from '@/lib/config';
+import { CONFIG, isMailboxOwner, mailboxOwner, spreadsheetUrl } from '@/lib/config';
 import { CATEGORY_VALUES, STATUS_VALUES } from '@/lib/constants';
 import { summarize, toLead } from '@/lib/leads';
 import { getLeadRows, getLogEntries } from '@/lib/sheets';
@@ -24,6 +24,7 @@ export async function GET() {
     const disabled = await isSystemDisabled(operator.accessToken);
     const armed = sendsArmed() && campaignWindowOpen(now) && !disabled;
     const sentToday = countSentToday(records, now);
+    const ownsMailbox = isMailboxOwner(operator.email);
 
     return Response.json({
       generatedAt: now.toISOString(),
@@ -48,7 +49,9 @@ export async function GET() {
         // Sending is armed by an explicit environment flag, so a deploy alone
         // can never make this console capable of delivery.
         mode: armed ? 'LIVE' : 'MANAGE_ONLY',
-        sendsEnabled: armed,
+        sendsEnabled: armed && ownsMailbox,
+        mailboxOwner: mailboxOwner(),
+        ownsMailbox,
         dryRun: false,
         testMode: false,
         systemDisabled: disabled,

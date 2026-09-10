@@ -3,7 +3,7 @@ import { dueFollowUpAction } from '@/lib/leads';
 import { readArgs } from '@/lib/request';
 import { runReplyScan } from '@/lib/replies';
 import { runSendJob } from '@/lib/send';
-import { errorResponse, requireOperator } from '@/lib/session';
+import { errorResponse, requireMailboxOwner } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,7 +21,7 @@ const CONFIRMATION: Record<string, string> = {
  */
 export async function POST(request: Request) {
   try {
-    const operator = await requireOperator();
+    const operator = await requireMailboxOwner();
     const [rawJob, rawConfirmation] = await readArgs(request);
     const job = String(rawJob || '').toUpperCase();
 
