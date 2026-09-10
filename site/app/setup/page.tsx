@@ -1,8 +1,30 @@
-import { auth } from '@/auth';
+import { auth, GOOGLE_SCOPES } from '@/auth';
 import { isAllowedEmail } from '@/lib/config';
 import { redirect } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Asks Google which scopes the current token actually carries. Requesting a
+ * scope and being granted it are different things, and the difference is
+ * otherwise invisible until an API call fails.
+ */
+async function grantedScopes(accessToken?: string): Promise<string[] | null> {
+  if (!accessToken) return null;
+  try {
+    const response = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+      { cache: 'no-store' }
+    );
+    if (!response.ok) return null;
+    const body = (await response.json()) as { scope?: string };
+    return String(body.scope || '').split(' ').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+const shortScope = (scope: string) => scope.replace('https://www.googleapis.com/auth/', '');
 
 /**
  * One-time setup for unattended runs.
@@ -19,6 +41,10 @@ export default async function Setup() {
 
   const configured = Boolean(process.env.AUTOMATION_REFRESH_TOKEN);
   const cronSecretSet = Boolean(process.env.CRON_SECRET);
+
+  const granted = await grantedScopes(session?.accessToken);
+  const requested = GOOGLE_SCOPES.split(' ');
+  const missing = granted ? requested.filter((scope) => !granted.includes(scope)) : [];
 
   return (
     <main className="signin">
@@ -54,6 +80,30 @@ export default async function Setup() {
             CRON_SECRET: <strong>{cronSecretSet ? 'set' : 'not set'}</strong>
           </p>
         </div>
+
+        <h2 className="setup-heading">Scopes this session actually holds</h2>
+        {granted === null ? (
+          <p className="signin-error">
+            Google would not describe this token. Sign out and back in.
+          </p>
+        ) : (
+          <>
+            <ul className="setup-scopes">
+              {requested.map((scope) => (
+                <li key={scope} className={granted.includes(scope) ? 'granted' : 'missing'}>
+                  {granted.includes(scope) ? '✓' : '✗'} {shortScope(scope)}
+                </li>
+              ))}
+            </ul>
+            {missing.length > 0 && (
+              <p className="signin-error">
+                Google granted less than the app asked for. Add these scopes to the OAuth consent
+                screen under <strong>Google Auth Platform → Data Access</strong>, save, then sign out
+                and back in. Google only issues scopes registered there.
+              </p>
+            )}
+          </>
+        )}
 
         {session?.refreshToken ? (
           <>
