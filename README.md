@@ -8,7 +8,7 @@ The checked-in AsaiVerse deployment is configured for manual live operation with
 
 ## Private React console
 
-The console is a second operator surface over the same Sheet-backed services; it is not a second CRM or database. It supports dashboard metrics, lead search/filtering, one-email-per-line or CSV import, editing, explicit approval, deterministic email previews, manual outreach jobs, recent logs, and emergency disable.
+The console is a second operator surface over the same Sheet-backed services; it is not a second CRM or database. It supports dashboard metrics, lead search/filtering, drag-and-drop `.xlsx` import alongside one-email-per-line or CSV paste, editing, explicit approval, deterministic email previews, manual outreach jobs, recent logs, and emergency disable.
 
 - All imported rows are `NEW`; import never approves or sends.
 - Browser code has no Gmail token and never accesses the Sheet directly.
@@ -16,6 +16,26 @@ The console is a second operator surface over the same Sheet-backed services; it
 - Deploy as **User accessing the web app** with access set to **Only myself**.
 - Live/test manual jobs require a typed confirmation. Dry-run jobs do not.
 - The client is bundled into one HTML file with no remote JavaScript/CSS dependency and no browser storage of lead data.
+
+### Importing a lead list
+
+Use **Drop XLSX** in the lead panel. The workbook is parsed inside the browser by the bundled reader, and only the chosen worksheet's cell values reach Apps Script. The file itself is never uploaded to Drive and is never stored by the script.
+
+Three layouts are recognized automatically:
+
+| Layout | Detected when | Handling |
+|---|---|---|
+| Header row | The first row names a known column — `Company`, `Contact Name`, `Email`, `Category`, `Website`, `Personalization`, `Notes`, and common aliases such as `Brand`, `Business Email`, or `Industry` | Columns are mapped by name and the header row is skipped |
+| Research list | A header-less row shaped as `#, Category, Company, Website, Contact/Lead source, India, Notes` | Mapped positionally; the contact column is mined for an email address |
+| Plain | Anything else | One email per line, or `Company, Email, Category` |
+
+- Emails are extracted from mixed cells such as `Partnerships <brand@example.com>`. Bare domains become `https://` URLs, and anything that is not a plausible URL is dropped rather than guessed.
+- Free-text categories are folded onto the existing category list; the original wording is preserved in Notes, along with the contact route and India availability from a research list.
+- A row with a company but no usable email still imports, as a research-only `NEW` row. It can never be approved or emailed until an operator adds a valid address, and the import result reports how many rows still need one.
+- Duplicates are skipped by email, or by company plus website when there is no email.
+- Limits come from `CONFIG.UI`: `MAX_IMPORT_ROWS`, `MAX_IMPORT_COLUMNS`, `MAX_IMPORT_CHARACTERS`, and `MAX_IMPORT_FILE_BYTES`. The client checks the file size and the server re-checks every limit before writing.
+
+Pasting one email per line or a CSV block still works from the same dialog.
 
 Build and verify the complete project with:
 

@@ -1,7 +1,7 @@
+'use client';
+
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
-import { createRoot } from 'react-dom/client';
 import readWorkbook from 'read-excel-file/universal';
-import './styles.css';
 
 type Lead = {
   id: string; rowNumber: number; company: string; contactName: string; email: string;
@@ -33,69 +33,48 @@ type ImportResult = { imported: number; withoutEmail: number; skipped: { row: nu
 type WorkbookSheet = { name: string; rows: string[][] };
 type WorkbookUpload = { fileName: string; fileBytes: number; sheets: WorkbookSheet[] };
 
-declare global {
-  interface Window { google?: { script?: { run?: GoogleRunner } } }
-}
-
-type GoogleRunner = {
-  withSuccessHandler(handler: (value: unknown) => void): GoogleRunner;
-  withFailureHandler(handler: (error: { message?: string } | string) => void): GoogleRunner;
-  [key: string]: unknown;
+/** Endpoints this console can reach. Anything absent is not ported yet. */
+const SERVER_ROUTES: Record<string, string> = {
+  uiBootstrap: '/api/console/bootstrap'
 };
 
-const mockLead: Lead = {
-  id: 'demo-lead-001', rowNumber: 2, company: 'Demo Gaming Brand', contactName: 'Partnerships Team',
-  email: 'partnerships@example.com', category: 'Gaming Peripherals', website: 'https://example.com',
-  personalization: 'Your hands-on gaming products could work well in a playable demo zone', status: 'APPROVED',
-  initialSentAt: '', followUp1SentAt: '', followUp2SentAt: '', replyStatus: '', notes: 'Local preview data only.',
-  optOut: false, lastError: '', updatedAt: new Date().toISOString(), previewAction: 'INITIAL', dueAction: '',
-  hasSendEvidence: false, hasPendingAction: false
-};
+/**
+ * Every server call goes to a Next.js route handler that re-checks the operator
+ * allowlist. Calls with no ported route fail loudly instead of resolving, so the
+ * UI can never imply a write that did not happen.
+ */
+async function callServer<T>(name: string, ...args: unknown[]): Promise<T> {
+  const route = SERVER_ROUTES[name];
+  if (!route) {
+    throw new Error(
+      `"${name}" is not available in this console yet — it still runs in the Apps Script deployment.`
+    );
+  }
 
-const mockBootstrap: Bootstrap = {
-  generatedAt: new Date().toISOString(), ownerEmail: 'taran.devx@gmail.com', title: 'Brand Outreach Console',
-  event: { name: 'AsaiVerse', date: 'January 2027', location: 'India', organization: '' },
-  sender: { from: 'taran@asaiverse.com', replyTo: 'taran@asaiverse.com', cc: ['ashish@asaiverse.com', 'gaurav@asaiverse.com'] },
-  imports: { maxRows: 500, maxFileBytes: 5 * 1024 * 1024 },
-  safety: { mode: 'DRY_RUN', sendsEnabled: false, dryRun: true, testMode: true, systemDisabled: false,
-    dailyLimit: 20, sentToday: 0, remainingToday: 20, triggerCount: 0, configurationErrors: [],
-    configurationWarnings: ['EVENT.NAME still contains a placeholder.', 'EVENT.ORGANIZATION still contains a placeholder.'] },
-  metrics: { total: 1, approved: 1, approvedReady: 1, dueFollowUps: 0, replied: 0, interested: 0 },
-  statuses: ['NEW','APPROVED','SENT','FOLLOW_UP_1','FOLLOW_UP_2','REPLIED','INTERESTED','MEETING','NEGOTIATING','CLOSED','NOT_INTERESTED','DO_NOT_CONTACT','REVIEW_REQUIRED'],
-  categories: ['Gaming Peripherals','PC Hardware','Laptops','Smartphones','Consumer Electronics','Gaming Accessories','Audio','Technology Startup','SaaS / AI','Telecom / Internet','Food / FMCG','Beverage','Fashion / Streetwear','Automotive','Education / EdTech','Gaming Community','Creator / Entertainment','Other'],
-  statusCounts: { APPROVED: 1 }, leads: [mockLead], truncated: false,
-  logs: [{ timestamp: new Date().toISOString(), company: 'Demo Gaming Brand', email: 'partnerships@example.com', action: 'PREVIEW', result: 'SAFE', message: 'Local preview only — no message was sent.' }],
-  spreadsheetUrl: 'https://docs.google.com/spreadsheets/'
-};
-
-function callServer<T>(name: string, ...args: unknown[]): Promise<T> {
-  const runner = window.google?.script?.run;
-  if (!runner) return mockCall<T>(name, args);
-  return new Promise<T>((resolve, reject) => {
-    const success = runner.withSuccessHandler((value) => resolve(value as T));
-    const failure = success.withFailureHandler((error) => reject(new Error(typeof error === 'string' ? error : error?.message || 'Apps Script request failed.')));
-    const method = failure[name];
-    if (typeof method !== 'function') return reject(new Error(`Server method ${name} is unavailable.`));
-    (method as (...values: unknown[]) => void).apply(failure, args);
+  const sendsBody = args.length > 0;
+  const response = await fetch(route, {
+    method: sendsBody ? 'POST' : 'GET',
+    headers: sendsBody ? { 'Content-Type': 'application/json' } : undefined,
+    body: sendsBody ? JSON.stringify({ args }) : undefined,
+    cache: 'no-store'
   });
-}
 
-async function mockCall<T>(name: string, args: unknown[]): Promise<T> {
-  await new Promise((resolve) => setTimeout(resolve, 280));
-  if (name === 'uiBootstrap') return structuredClone(mockBootstrap) as T;
-  if (name === 'uiPreviewLead') return {
-    action: 'INITIAL', to: mockLead.email, cc: mockBootstrap.sender.cc,
-    subject: `${mockLead.company} × ${mockBootstrap.event.name} — Brand Activation Opportunity`,
-    body: `Hi Partnerships Team,\n\nI'm reaching out regarding ${mockBootstrap.event.name}, a two-day esports, gaming, technology, creator and entertainment event taking place in January 2027 in India.\n\nThe event brings together gamers and esports audiences in an environment designed for hands-on product demos, trials and playable brand experiences.\n\nWe're currently opening exhibition and brand activation spaces for selected brands interested in reaching this audience.\n\nWould you be open to a quick conversation?\n\nBest,\nTaran\ntaran@asaiverse.com\n\nIf you would prefer not to receive further messages about this event, reply “opt out” and we will update our list.`,
-    warnings: ['Local preview data — no message can be sent from this page.']
-  } as T;
-  if (name === 'uiRunJob') return { job: String(args[0]), mode: 'DRY_RUN', processed: 1, sent: 0, dryRun: 1, testSent: 0, skipped: 0, replies: 0, errors: 0, message: 'Local preview completed.' } as T;
-  if (name === 'uiImportLeads') return { imported: 0, skipped: [{ row: 1, value: '', reason: 'Local preview does not change data' }] } as T;
-  if (name === 'uiImportWorkbook') return { imported: 0, withoutEmail: 0, skipped: [{ row: 1, value: '', reason: 'Local preview does not change data' }] } as T;
-  if (name === 'uiBulkApprove') return { approved: [], rejected: [] } as T;
-  if (name === 'uiSaveLead') return args[0] as T;
-  if (name === 'uiEmergencyDisable') return { systemDisabled: true, deletedTriggers: 0, requestId: 'preview', warning: '' } as T;
-  throw new Error(`Mock server method ${name} is unavailable.`);
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // A non-JSON body means an infrastructure error page, not an API response.
+  }
+
+  if (!response.ok) {
+    const message = (payload as { error?: string } | null)?.error;
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(message || 'Your Google session is no longer valid. Sign in again.');
+    }
+    throw new Error(message || `Request failed (${response.status}).`);
+  }
+
+  return payload as T;
 }
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -263,7 +242,7 @@ function App() {
 
   if (loading && !data) return <div className="app-loading"><div className="loader"/><p>Opening secure outreach console…</p></div>;
 
-  const isLocal = !window.google?.script?.run;
+  const isLocal = data?.safety.mode === 'READ_ONLY';
   const mode = data?.safety.mode || 'UNKNOWN';
   const configurationBlocked = !!data?.safety.configurationErrors.length;
   const jobsBlocked = !!busy || !!data?.safety.systemDisabled || (mode !== 'DRY_RUN' && configurationBlocked);
@@ -282,7 +261,7 @@ function App() {
     <main>
       <header className="topbar"><div><span className="eyebrow">PRIVATE OPERATOR CONSOLE</span><h1>Brand outreach control room</h1><p>{data?.event.name} · {data?.event.date} · {data?.event.location}</p></div><button className="icon-button" onClick={() => refresh()} disabled={!!busy} aria-label="Refresh dashboard"><Icon name="refresh"/></button></header>
 
-      {isLocal && <div className="local-banner"><Icon name="alert"/><span>Local preview data. Server actions are simulated and cannot change the Sheet or send email.</span></div>}
+      {isLocal && <div className="local-banner"><Icon name="alert"/><span>Live data from your Sheet, read-only. Approving, importing and sending still run in the Apps Script deployment.</span></div>}
       {error && <div className="toast error"><Icon name="alert"/><span>{error}</span><button onClick={() => setError('')}><Icon name="close" size={16}/></button></div>}
       {notice && <div className="toast success"><Icon name="check"/><span>{notice}</span><button onClick={() => setNotice('')}><Icon name="close" size={16}/></button></div>}
 
@@ -344,4 +323,4 @@ function LeadDrawer({ lead, statuses, categories, onClose, onSave }: { lead: Lea
   return <div className="drawer-backdrop" role="dialog" aria-modal="true" aria-label="Edit lead"><form className="drawer" onSubmit={(e) => { e.preventDefault(); onSave(draft); }}><div className="modal-head"><div><span className="eyebrow">LEAD #{lead.rowNumber}</span><h2>{lead.company || lead.email}</h2></div><button type="button" onClick={onClose}><Icon name="close"/></button></div><div className="form-grid"><label>Company<input value={draft.company} onChange={(e) => set('company',e.target.value)} placeholder="Required before approval"/></label><label>Contact name<input value={draft.contactName} onChange={(e) => set('contactName',e.target.value)}/></label><label className="wide">Email<input type="email" value={draft.email} onChange={(e) => set('email',e.target.value)}/></label><label>Category<select value={draft.category} onChange={(e) => set('category',e.target.value)}><option value="">Select category</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></label><label>Status<select value={draft.status} onChange={(e) => set('status',e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label><label className="wide">Website<input value={draft.website} onChange={(e) => set('website',e.target.value)} placeholder="https://…"/></label><label className="wide">Personalization<textarea rows={4} value={draft.personalization} onChange={(e) => set('personalization',e.target.value)} placeholder="Included in the initial email"/></label><label className="wide">Internal notes<textarea rows={4} value={draft.notes} onChange={(e) => set('notes',e.target.value)} placeholder="Never inserted into emails"/></label><label className="checkbox-label"><input type="checkbox" checked={draft.optOut} onChange={(e) => set('optOut',e.target.checked)}/><span><strong>Opt out</strong><small>Immediately sets DO NOT CONTACT</small></span></label></div>{lead.lastError && <div className="preview-warning"><Icon name="alert"/><p>{lead.lastError}</p></div>}<div className="evidence"><span>Initial sent <strong>{formatDate(lead.initialSentAt)}</strong></span><span>Follow-up 1 <strong>{formatDate(lead.followUp1SentAt)}</strong></span><span>Follow-up 2 <strong>{formatDate(lead.followUp2SentAt)}</strong></span></div><div className="modal-actions sticky"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button type="submit" className="primary">Save lead</button></div></form></div>;
 }
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
+export default App;

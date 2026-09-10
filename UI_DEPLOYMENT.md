@@ -6,7 +6,7 @@ The console is hosted by the existing Apps Script project, so it adds no hosting
 
 1. Install the pinned local build dependencies with `npm install`.
 2. Run `npm run check`.
-3. Confirm the command reports all 33 outreach tests plus the web-server checks.
+3. Confirm the command reports all 43 outreach tests plus the 24 web-server checks.
 4. `dist/BrandOutreach.gs` and `appsscript/Index.html` are generated artifacts. Do not edit them directly.
 
 For a local visual preview, run `npm run preview` after the build and open `http://127.0.0.1:4173`. The standalone preview displays a prominent mock-data banner. Its server calls are simulated; it cannot access Google or send email.
@@ -52,11 +52,12 @@ With `SENDS_ENABLED=false`, `DRY_RUN=true`, `TEST_MODE=true`, and no triggers:
 1. Confirm the banner reads `DRY RUN — DELIVERY LOCKED`.
 2. Confirm daily usage is `0` and trigger count is `0`.
 3. Import one controlled test email. Verify it appears as `NEW`.
-4. Edit Company/Category and save. Verify no send timestamp appears.
-5. Preview it. Confirm TO, both fixed CC addresses, subject, body, signature, and opt-out copy.
-6. Approve it. Confirm status changes to `APPROVED` and no email is sent.
-7. Run **Check approved leads**. Confirm the result reports a dry-run candidate and live sent `0`.
-8. Check `Outreach Log` and Gmail Sent.
+4. Drop a small `.xlsx` list. Confirm the worksheet picker, the row count, and the sample rows before importing, then verify every imported row is `NEW`, that free-text categories landed on the allowed list, and that any row without an email was kept as research-only.
+5. Edit Company/Category and save. Verify no send timestamp appears.
+6. Preview it. Confirm TO, both fixed CC addresses, subject, body, signature, and opt-out copy.
+7. Approve it. Confirm status changes to `APPROVED` and no email is sent.
+8. Run **Check approved leads**. Confirm the result reports a dry-run candidate and live sent `0`.
+9. Check `Outreach Log` and Gmail Sent.
 
 ## Updating a deployment
 

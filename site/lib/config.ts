@@ -1,0 +1,121 @@
+/**
+ * Port of src/00_Config.gs for the Next.js console.
+ *
+ * Values that differ per environment (which Sheet, who may sign in) come from
+ * environment variables so the same build can serve preview and production.
+ * Campaign copy and safety limits stay in source, exactly as they do in the
+ * Apps Script project, so changing them remains a reviewed code change.
+ */
+
+const requiredEnv = (name: string): string => {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+};
+
+const listEnv = (name: string): string[] =>
+  (process.env[name] || '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+
+export const CONFIG = {
+  CAMPAIGN_ID: 'ASAIVERSE_2027_BRAND_OUTREACH_V1',
+  TIME_ZONE: 'Asia/Kolkata',
+
+  EVENT: {
+    NAME: 'AsaiVerse',
+    ONE_LINE_DESCRIPTION:
+      'a two-day esports, gaming, technology, creator and entertainment event',
+    DATE_PREPOSITION: 'in',
+    DATE_DISPLAY: 'January 2027',
+    LOCATION_DISPLAY: 'India',
+    ORGANIZATION: ''
+  },
+
+  CAMPAIGN_SEND_CUTOFF_ISO: '2027-01-31',
+
+  SENDER: {
+    NAME: 'Taran',
+    PHONE: '',
+    BUSINESS_EMAIL: 'taran@asaiverse.com',
+    FROM_EMAIL: 'taran@asaiverse.com',
+    REPLY_TO_EMAIL: 'taran@asaiverse.com',
+    CC_EMAILS: ['ashish@asaiverse.com', 'gaurav@asaiverse.com']
+  },
+
+  SHEETS: {
+    LEADS_NAME: 'Leads',
+    LOG_NAME: 'Outreach Log'
+  },
+
+  UI: {
+    TITLE: 'Brand Outreach Console',
+    MAX_LEADS_RETURNED: 500,
+    MAX_LOG_ROWS: 80,
+    MAX_IMPORT_ROWS: 500,
+    MAX_IMPORT_COLUMNS: 40,
+    MAX_IMPORT_CHARACTERS: 300000,
+    MAX_IMPORT_FILE_BYTES: 5 * 1024 * 1024
+  },
+
+  FOLLOW_UP: {
+    FIRST_AFTER_DAYS_FROM_INITIAL: 4,
+    SECOND_AFTER_DAYS_FROM_INITIAL: 9,
+    SECOND_MIN_DAYS_AFTER_FIRST: 3
+  },
+
+  SAFETY: {
+    /**
+     * The Next.js console does not send mail yet. This flag exists so the
+     * value is explicit rather than implied, and so the UI can state the
+     * delivery position honestly. Sending stays with the Apps Script
+     * deployment until the send path is ported with its locking intact.
+     */
+    SENDS_ENABLED: false,
+    DAILY_SEND_LIMIT: 1,
+    MAX_LOG_MESSAGE_LENGTH: 500
+  }
+} as const;
+
+/** Google accounts permitted to use the console, lowercase. */
+export const allowedEmails = (): string[] => {
+  const configured = listEnv('CONSOLE_ALLOWED_EMAILS');
+  if (!configured.length) {
+    throw new Error('CONSOLE_ALLOWED_EMAILS must list at least one Google account.');
+  }
+  return configured;
+};
+
+/**
+ * Gmail ignores dots in the local part, so taran.devx@gmail.com and
+ * tarandevx@gmail.com are the same mailbox. Google may return either form,
+ * and a plain string compare would lock the operator out of their own
+ * console. Only gmail.com/googlemail.com get this treatment — dots are
+ * significant everywhere else.
+ */
+const canonicalEmail = (value: string): string => {
+  const email = String(value || '').trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at < 1) return email;
+
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (domain !== 'gmail.com' && domain !== 'googlemail.com') return email;
+
+  // A Gmail "+tag" suffix also routes to the same mailbox.
+  const untagged = local.split('+')[0];
+  return `${untagged.replace(/\./g, '')}@gmail.com`;
+};
+
+export const isAllowedEmail = (value: unknown): boolean => {
+  const candidate = canonicalEmail(String(value ?? ''));
+  if (!candidate) return false;
+  return allowedEmails().some((allowed) => canonicalEmail(allowed) === candidate);
+};
+
+/** Spreadsheet that remains the source of truth and approval ledger. */
+export const spreadsheetId = (): string => requiredEnv('SHEET_ID');
+
+export const spreadsheetUrl = (): string =>
+  `https://docs.google.com/spreadsheets/d/${spreadsheetId()}/edit`;
