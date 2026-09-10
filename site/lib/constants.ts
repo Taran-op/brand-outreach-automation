@@ -108,3 +108,11 @@ export const VISIBLE_LEAD_HEADERS: string[] = [
   LEAD_HEADERS.NOTES,
   LEAD_HEADERS.OPT_OUT
 ];
+
+export const ACTION = {
+  INITIAL: 'INITIAL',
+  FOLLOW_UP_1: 'FOLLOW_UP_1',
+  FOLLOW_UP_2: 'FOLLOW_UP_2'
+} as const;
+
+export type ActionValue = (typeof ACTION)[keyof typeof ACTION];

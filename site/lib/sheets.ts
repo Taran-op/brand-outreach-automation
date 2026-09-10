@@ -108,6 +108,29 @@ export const leadValue = (record: LeadRecord, header: string): unknown => {
   return record.values[column - 1] ?? '';
 };
 
+export type LeadsTable = {
+  headerMap: Record<string, number>;
+  columnCount: number;
+  records: LeadRecord[];
+};
+
+/**
+ * The header row as well as the data, for writers that must build a full row
+ * in the sheet's own column order.
+ */
+export async function getLeadsTable(accessToken: string): Promise<LeadsTable> {
+  const records = await getLeadRows(accessToken);
+  const headerMap = records.length ? records[0].headerMap : await readHeaderMap(accessToken);
+  const columnCount = Math.max(...Object.values(headerMap), 0);
+  return { headerMap, columnCount, records };
+}
+
+async function readHeaderMap(accessToken: string): Promise<Record<string, number>> {
+  const rows = await readValues(accessToken, quoteRange(CONFIG.SHEETS.LEADS_NAME, 'A1:AZ1'));
+  if (!rows.length) throw new SheetsError('The Leads tab has no header row.', 409);
+  return buildHeaderMap(rows[0]);
+}
+
 export async function getLeadRows(accessToken: string): Promise<LeadRecord[]> {
   let rows: unknown[][];
   try {

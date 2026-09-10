@@ -35,7 +35,12 @@ type WorkbookUpload = { fileName: string; fileBytes: number; sheets: WorkbookShe
 
 /** Endpoints this console can reach. Anything absent is not ported yet. */
 const SERVER_ROUTES: Record<string, string> = {
-  uiBootstrap: '/api/console/bootstrap'
+  uiBootstrap: '/api/console/bootstrap',
+  uiPreviewLead: '/api/console/preview',
+  uiSaveLead: '/api/console/lead',
+  uiBulkApprove: '/api/console/approve',
+  uiImportLeads: '/api/console/import',
+  uiImportWorkbook: '/api/console/import-workbook'
 };
 
 /**
@@ -242,13 +247,13 @@ function App() {
 
   if (loading && !data) return <div className="app-loading"><div className="loader"/><p>Opening secure outreach console…</p></div>;
 
-  const isLocal = data?.safety.mode === 'READ_ONLY';
+  const isLocal = !!data && !data.safety.sendsEnabled;
   const mode = data?.safety.mode || 'UNKNOWN';
   const configurationBlocked = !!data?.safety.configurationErrors.length;
   const jobsBlocked = !!busy || !!data?.safety.systemDisabled || (mode !== 'DRY_RUN' && configurationBlocked);
   const selectedWorkbookSheet = workbookUpload?.sheets.find((sheet) => sheet.name === workbookSheetName) || null;
   const workbookTooLarge = !!selectedWorkbookSheet && selectedWorkbookSheet.rows.length > (data?.imports.maxRows || 500) + 1;
-  const modeLabel = data?.safety.systemDisabled ? 'SYSTEM DISABLED' : configurationBlocked && mode === 'LIVE' ? 'LIVE — CONFIGURATION BLOCKED' : mode === 'DRY_RUN' ? 'DRY RUN — DELIVERY LOCKED' : mode === 'LIVE' ? 'LIVE — MANUAL SENDS ENABLED' : mode;
+  const modeLabel = data?.safety.systemDisabled ? 'SYSTEM DISABLED' : configurationBlocked && mode === 'LIVE' ? 'LIVE — CONFIGURATION BLOCKED' : mode === 'DRY_RUN' ? 'DRY RUN — DELIVERY LOCKED' : mode === 'LIVE' ? 'LIVE — MANUAL SENDS ENABLED' : mode === 'MANAGE_ONLY' ? 'MANAGE ONLY — DELIVERY LOCKED' : mode;
   const jobPhrase = mode === 'LIVE' ? (pendingJob === 'INITIALS' ? 'SEND APPROVED' : pendingJob === 'FOLLOW_UPS' ? 'SEND FOLLOW UPS' : 'CHECK REPLIES') : mode === 'TEST' ? 'SEND TEST' : '';
 
   return <div className="shell">
@@ -261,7 +266,7 @@ function App() {
     <main>
       <header className="topbar"><div><span className="eyebrow">PRIVATE OPERATOR CONSOLE</span><h1>Brand outreach control room</h1><p>{data?.event.name} · {data?.event.date} · {data?.event.location}</p></div><button className="icon-button" onClick={() => refresh()} disabled={!!busy} aria-label="Refresh dashboard"><Icon name="refresh"/></button></header>
 
-      {isLocal && <div className="local-banner"><Icon name="alert"/><span>Live data from your Sheet, read-only. Approving, importing and sending still run in the Apps Script deployment.</span></div>}
+      {isLocal && <div className="local-banner"><Icon name="alert"/><span>Editing, approving and importing write straight to your Sheet. Sending still runs in the Apps Script deployment — no email can leave from here.</span></div>}
       {error && <div className="toast error"><Icon name="alert"/><span>{error}</span><button onClick={() => setError('')}><Icon name="close" size={16}/></button></div>}
       {notice && <div className="toast success"><Icon name="check"/><span>{notice}</span><button onClick={() => setNotice('')}><Icon name="close" size={16}/></button></div>}
 

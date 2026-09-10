@@ -40,7 +40,9 @@ export async function GET() {
         maxFileBytes: CONFIG.UI.MAX_IMPORT_FILE_BYTES
       },
       safety: {
-        mode: 'READ_ONLY',
+        // Editing, approving and importing write to the Sheet from here.
+        // Delivery is still the Apps Script deployment's job.
+        mode: 'MANAGE_ONLY',
         sendsEnabled: false,
         dryRun: false,
         testMode: false,
