@@ -39,7 +39,7 @@ export const CONFIG = {
     NAME: 'Taranjeet Singh',
     TITLE: 'Lead – Brand Connect',
     SIGN_OFF: 'Warm regards,',
-    PHONE: '',
+    PHONE: '+91-9210608094',
     BUSINESS_EMAIL: 'taran@asaiverse.com',
     FROM_EMAIL: 'taran@asaiverse.com',
     REPLY_TO_EMAIL: 'taran@asaiverse.com',
