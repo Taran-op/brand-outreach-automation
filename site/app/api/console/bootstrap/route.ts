@@ -2,6 +2,7 @@ import { CONFIG, isMailboxOwner, mailboxOwner, spreadsheetUrl } from '@/lib/conf
 import { CATEGORY_VALUES, STATUS_VALUES } from '@/lib/constants';
 import { summarize, toLead } from '@/lib/leads';
 import { getLeadRows, getLogEntries } from '@/lib/sheets';
+import { replyRoutingWarning } from '@/lib/deliverability';
 import { isSystemDisabled } from '@/lib/killswitch';
 import { campaignWindowOpen, countSentToday, sendsArmed } from '@/lib/send';
 import { errorResponse, requireOperator } from '@/lib/session';
@@ -25,6 +26,7 @@ export async function GET() {
     const armed = sendsArmed() && campaignWindowOpen(now) && !disabled;
     const sentToday = countSentToday(records, now);
     const ownsMailbox = isMailboxOwner(operator.email);
+    const routingWarning = await replyRoutingWarning();
 
     return Response.json({
       generatedAt: now.toISOString(),
@@ -63,7 +65,7 @@ export async function GET() {
         // read-only is not one — the banner above the dashboard already says
         // so, and surfacing it here reads as a fault that needs fixing.
         configurationErrors: [],
-        configurationWarnings: []
+        configurationWarnings: routingWarning ? [routingWarning] : []
       },
       metrics,
       statuses: STATUS_VALUES,
