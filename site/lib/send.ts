@@ -16,6 +16,7 @@
  * carries a message stamped with the attempt id (sent exactly once).
  */
 
+import { loadBrochure } from './brochure';
 import { CONFIG } from './config';
 import { ACTION, AUTOMATION_STOP_STATUSES, LEAD_HEADERS, STATUS, type ActionValue } from './constants';
 import {
@@ -266,7 +267,12 @@ export async function sendOneLead(
     }
   }
 
-  const message = buildEmailForLead(record, action);
+  // Only the initial email carries the overview graphic; follow-ups sit in
+  // the same thread and repeating it adds weight for nothing.
+  const brochure = action === ACTION.INITIAL ? await loadBrochure() : null;
+  const message = buildEmailForLead(record, action, {
+    inlineImageCid: brochure?.contentId
+  });
   const recipient = normalizeEmail(message.to);
   if (!isValidSingleEmail(recipient)) return { outcome: 'SKIPPED', reason: 'Recipient address is invalid.' };
   if (isConfiguredCcEmail(recipient)) {
@@ -305,7 +311,8 @@ export async function sendOneLead(
     action,
     attemptId,
     inReplyTo,
-    references
+    references,
+    inlineImage: brochure ?? undefined
   });
 
   // Draft first: this is what makes an interrupted send recoverable.

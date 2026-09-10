@@ -153,7 +153,13 @@ const customPersonalizationLine = (company: string, personalization: string): st
 /** A body block is either a paragraph or a bulleted list. */
 export type Block = string | { bullets: string[] };
 
-function finishEmail(to: string, subject: string, action: ActionValue, blocks: Block[]): OutreachMessage {
+function finishEmail(
+  to: string,
+  subject: string,
+  action: ActionValue,
+  blocks: Block[],
+  inlineImageCid?: string
+): OutreachMessage {
   const signatureLines = [
     safeDisplayText(CONFIG.SENDER.SIGN_OFF),
     safeDisplayText(CONFIG.SENDER.NAME),
@@ -185,8 +191,15 @@ function finishEmail(to: string, subject: string, action: ActionValue, blocks: B
     .join('');
   const htmlSignature = `<p style="margin:0 0 14px 0">${signatureLines.map(htmlEscape).join('<br>')}</p>`;
   const htmlOptOut = `<p style="margin:20px 0 0 0;color:#64748b;font-size:12px">${htmlEscape(optOut)}</p>`;
+  // Only emitted when the caller confirms the part is attached, so a missing
+  // file can never leave a broken image in the recipient's client.
+  const htmlImage = inlineImageCid
+    ? `<p style="margin:0 0 18px 0"><img src="cid:${inlineImageCid}" alt="${htmlEscape(CONFIG.EVENT.NAME)} overview" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0"></p>`
+    : '';
+
   const htmlBody =
     '<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.55;color:#1f2937">' +
+    htmlImage +
     htmlParagraphs +
     htmlSignature +
     htmlOptOut +
@@ -195,7 +208,11 @@ function finishEmail(to: string, subject: string, action: ActionValue, blocks: B
   return { action, to, cc: configuredCcEmails(), subject, plainBody, htmlBody };
 }
 
-export function buildEmailForLead(record: LeadRecord, action: ActionValue): OutreachMessage {
+export function buildEmailForLead(
+  record: LeadRecord,
+  action: ActionValue,
+  options: { inlineImageCid?: string } = {}
+): OutreachMessage {
   const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
   const contactName = safeDisplayText(leadValue(record, LEAD_HEADERS.CONTACT_NAME));
   const category = safeDisplayText(leadValue(record, LEAD_HEADERS.CATEGORY));
@@ -229,7 +246,7 @@ export function buildEmailForLead(record: LeadRecord, action: ActionValue): Outr
     ]);
   }
 
-  return buildInitialEmail(to, subject, greeting, company, personalization);
+  return buildInitialEmail(to, subject, greeting, company, personalization, options.inlineImageCid);
 }
 
 /**
@@ -245,7 +262,8 @@ function buildInitialEmail(
   subject: string,
   greeting: string,
   company: string,
-  personalization: string
+  personalization: string,
+  inlineImageCid?: string
 ): OutreachMessage {
   const event = safeDisplayText(CONFIG.EVENT.NAME);
 
@@ -304,7 +322,7 @@ function buildInitialEmail(
     customPersonalizationLine(company, personalization),
     `We would be delighted to present the sponsorship opportunities and explore how ${event} can help achieve your brand's engagement and growth objectives.`,
     'Would you be available for a brief discussion next week?'
-  ].filter(Boolean) as Block[]);
+  ].filter(Boolean) as Block[], inlineImageCid);
 }
 
 

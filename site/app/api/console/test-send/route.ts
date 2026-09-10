@@ -1,5 +1,6 @@
 import { findLeadById, validateLeadId } from '@/lib/approval';
-import { LEAD_HEADERS } from '@/lib/constants';
+import { loadBrochure } from '@/lib/brochure';
+import { ACTION, LEAD_HEADERS } from '@/lib/constants';
 import { assertSendAsAuthorized, buildRawMime, createDraft, deleteDraft, sendDraft } from '@/lib/gmail';
 import { isSystemDisabled } from '@/lib/killswitch';
 import { readArgs } from '@/lib/request';
@@ -47,7 +48,8 @@ export async function POST(request: Request) {
     if (!record) throw Object.assign(new Error('That lead no longer exists.'), { status: 404 });
 
     const action = determinePreviewAction(record);
-    const real = buildEmailForLead(record, action);
+    const brochure = action === ACTION.INITIAL ? await loadBrochure() : null;
+    const real = buildEmailForLead(record, action, { inlineImageCid: brochure?.contentId });
     const intended = normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL));
     const test = buildTestEnvelope(real, operator.email, intended);
 
@@ -59,7 +61,8 @@ export async function POST(request: Request) {
       htmlBody: test.htmlBody,
       leadId: 'TEST',
       action: `TEST_${action}`,
-      attemptId: crypto.randomUUID()
+      attemptId: crypto.randomUUID(),
+      inlineImage: brochure ?? undefined
     });
 
     const draft = await createDraft(operator.accessToken, raw);

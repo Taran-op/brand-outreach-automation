@@ -97,6 +97,14 @@ const sameEmailSet = (a: string[], b: string[]): boolean => {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 };
 
+export type InlineImage = {
+  /** Referenced from the HTML as <img src="cid:CONTENT_ID">. */
+  contentId: string;
+  fileName: string;
+  mimeType: string;
+  bytes: Buffer;
+};
+
 export type MimeParams = {
   to: string;
   cc: string[];
@@ -108,6 +116,7 @@ export type MimeParams = {
   attemptId: string;
   inReplyTo?: string;
   references?: string;
+  inlineImage?: InlineImage;
 };
 
 /**
@@ -133,6 +142,7 @@ export function buildRawMime(params: MimeParams): string {
   }
 
   const boundary = `brand_outreach_${crypto.randomUUID().replace(/-/g, '')}`;
+  const relatedBoundary = `brand_outreach_rel_${crypto.randomUUID().replace(/-/g, '')}`;
   const headers = [
     `To: ${to}`,
     `Cc: ${configuredCc.join(', ')}`,
@@ -147,26 +157,51 @@ export function buildRawMime(params: MimeParams): string {
   if (params.inReplyTo) headers.push(`In-Reply-To: ${sanitizeReferenceHeader(params.inReplyTo)}`);
   if (params.references) headers.push(`References: ${sanitizeReferenceHeader(params.references)}`);
   headers.push('MIME-Version: 1.0');
-  headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
 
-  const raw = headers
-    .concat([
+  // The text/plain and text/html alternatives, always present.
+  const alternative = [
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    foldBase64(base64Utf8(String(params.plainBody || ''))),
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    foldBase64(base64Utf8(String(params.htmlBody || ''))),
+    `--${boundary}--`
+  ];
+
+  let body: string[];
+  if (params.inlineImage) {
+    // multipart/related wraps the alternatives together with the image, so the
+    // client renders it in place of the cid: reference rather than listing it
+    // as a separate attachment.
+    headers.push(`Content-Type: multipart/related; boundary="${relatedBoundary}"`);
+    body = [
       '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset="UTF-8"',
+      `--${relatedBoundary}`,
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      '',
+      ...alternative,
+      '',
+      `--${relatedBoundary}`,
+      `Content-Type: ${params.inlineImage.mimeType}; name="${params.inlineImage.fileName}"`,
       'Content-Transfer-Encoding: base64',
+      `Content-ID: <${params.inlineImage.contentId}>`,
+      `Content-Disposition: inline; filename="${params.inlineImage.fileName}"`,
       '',
-      foldBase64(base64Utf8(String(params.plainBody || ''))),
-      `--${boundary}`,
-      'Content-Type: text/html; charset="UTF-8"',
-      'Content-Transfer-Encoding: base64',
-      '',
-      foldBase64(base64Utf8(String(params.htmlBody || ''))),
-      `--${boundary}--`,
+      foldBase64(params.inlineImage.bytes.toString('base64')),
+      `--${relatedBoundary}--`,
       ''
-    ])
-    .join('\r\n');
+    ];
+  } else {
+    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    body = ['', ...alternative, ''];
+  }
 
+  const raw = headers.concat(body).join('\r\n');
   return Buffer.from(raw, 'utf8').toString('base64url').replace(/=+$/g, '');
 }
 
