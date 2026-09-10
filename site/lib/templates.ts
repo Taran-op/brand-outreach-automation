@@ -286,3 +286,38 @@ export function getPreviewWarnings(
   if (hasPendingAction(record)) warnings.push('A pending send guard exists; automatic sending is paused.');
   return warnings;
 }
+
+/**
+ * Redirects a composed message to the operator's own mailbox for a smoke test.
+ *
+ * The production recipient is named in the body rather than used, the subject
+ * is prefixed so it can never be mistaken for real outreach, and the caller is
+ * responsible for writing no lead evidence — a test must not advance a lead's
+ * lifecycle or consume its one real send.
+ */
+export function buildTestEnvelope(
+  message: OutreachMessage,
+  testRecipient: string,
+  intendedRecipient: string
+): OutreachMessage {
+  const to = normalizeEmail(testRecipient);
+  if (!isValidSingleEmail(to)) throw new Error('The test recipient address is invalid.');
+  if (to === normalizeEmail(intendedRecipient)) {
+    throw new Error('The test recipient matches the real lead address; redirected test refused.');
+  }
+
+  const notice =
+    `TEST MODE — intended production recipient: ${normalizeEmail(intendedRecipient) || '(none)'}. ` +
+    'No lead state was changed and no brand was contacted.';
+
+  return {
+    action: message.action,
+    to,
+    cc: configuredCcEmails(),
+    subject: `[TEST – DO NOT FORWARD] [${message.action}] ${message.subject}`,
+    plainBody: `${notice}\n\n${message.plainBody}`,
+    htmlBody:
+      '<div style="padding:10px;margin-bottom:16px;background:#fef3c7;border:1px solid #f59e0b">' +
+      `${htmlEscape(notice)}</div>${message.htmlBody}`
+  };
+}

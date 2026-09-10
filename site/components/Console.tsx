@@ -43,7 +43,8 @@ const SERVER_ROUTES: Record<string, string> = {
   uiImportWorkbook: '/api/console/import-workbook',
   uiRunJob: '/api/console/job',
   uiEmergencyDisable: '/api/console/disable',
-  uiEnrichLeads: '/api/console/enrich'
+  uiEnrichLeads: '/api/console/enrich',
+  uiSendTest: '/api/console/test-send'
 };
 
 /**
@@ -224,6 +225,13 @@ function App() {
   };
 
   const openJob = (job: string) => { setPendingJob(job); setConfirmation(''); setModal('job'); };
+  const sendTest = async () => {
+    try {
+      const result = await run('test', () => callServer<{ message: string }>('uiSendTest', drawerLead?.id || null));
+      setNotice(result?.message || 'Test sent.');
+    } catch { /* surfaced globally */ }
+  };
+
   const runEnrichment = async () => {
     try {
       const result = await run('enrich', () => callServer<JobSummary>('uiEnrichLeads'));
@@ -313,7 +321,7 @@ function App() {
           {data?.truncated && <p className="footnote">Showing the first {data.leads.length} records. Use the source Sheet for the complete list.</p>}
         </div>
 
-        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.</p><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
+        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.</p><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
       </section>
 
       <section id="activity" className="panel activity-panel"><div className="panel-head"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Recent activity</h2></div><span className="muted-text">Latest {data?.logs.length || 0} events</span></div><div className="activity-list">{data?.logs.map((item, i) => <article key={`${item.timestamp}-${i}`}><span className={`activity-dot ${statusTone(item.result)}`}/><div><strong>{item.action} · {item.result}</strong><p>{item.message}</p><small>{item.company || item.email || 'System'} · {formatDate(item.timestamp)}</small></div></article>)}{!data?.logs.length && <p className="empty">No log entries yet.</p>}</div></section>
