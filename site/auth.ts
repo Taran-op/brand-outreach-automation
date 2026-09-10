@@ -107,6 +107,8 @@ const config: NextAuthConfig = {
 
     session({ session, token }) {
       session.accessToken = token.accessToken as string | undefined;
+      // Shown once on /setup so the operator can store it for scheduled runs.
+      session.refreshToken = token.refreshToken as string | undefined;
       session.error = token.error as string | undefined;
       return session;
     }
