@@ -1,6 +1,7 @@
 import { CONFIG } from '@/lib/config';
 import { dueFollowUpAction } from '@/lib/leads';
 import { readArgs } from '@/lib/request';
+import { runReplyScan } from '@/lib/replies';
 import { runSendJob } from '@/lib/send';
 import { errorResponse, requireOperator } from '@/lib/session';
 
@@ -24,11 +25,22 @@ export async function POST(request: Request) {
     const [rawJob, rawConfirmation] = await readArgs(request);
     const job = String(rawJob || '').toUpperCase();
 
+    // Reply checking reads the mailbox and can only ever suppress sending, so
+    // it needs no typed confirmation and no send arming.
     if (job === 'REPLIES') {
-      throw Object.assign(
-        new Error('Reply checking is not ported yet — run it from the Apps Script deployment.'),
-        { status: 501 }
-      );
+      const scan = await runReplyScan(operator.accessToken, CONFIG.SAFETY.MAX_REPLY_CHECKS_PER_RUN);
+      return Response.json({
+        job,
+        mode: 'READ_MAILBOX',
+        processed: scan.processed,
+        sent: 0,
+        dryRun: 0,
+        testSent: 0,
+        skipped: 0,
+        replies: scan.replies + scan.optOuts,
+        errors: scan.errors,
+        message: scan.message
+      });
     }
     if (job !== 'INITIALS' && job !== 'FOLLOW_UPS') throw new Error('Unknown job.');
 

@@ -9,7 +9,7 @@
 
 import { CONFIG } from './config';
 import { isValidSingleEmail, normalizeEmail, safeDisplayText } from './text';
-import { configuredCcEmails, type OutreachMessage } from './templates';
+import { configuredCcEmails } from './templates';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
@@ -288,4 +288,96 @@ export async function assertSendAsAuthorized(accessToken: string): Promise<void>
   if (match.verificationStatus && match.verificationStatus !== 'accepted') {
     throw new GmailError(`Send-As ${from} is not verified (${match.verificationStatus}).`, 409);
   }
+}
+
+/** Decodes RFC 2047 encoded-words so a Subject can be re-encoded exactly once. */
+export function decodeRfc2047Header(value: unknown): string {
+  const text = String(value ?? '');
+  const pattern = /=\?([^?\s]+)\?([bq])\?([^?]*)\?=/gi;
+  let output = '';
+  let lastIndex = 0;
+  let previousWasEncoded = false;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const between = text.slice(lastIndex, match.index);
+    if (!(previousWasEncoded && /^\s*$/.test(between))) output += between;
+
+    let decoded = match[0];
+    try {
+      const charset = match[1];
+      if (match[2].toLowerCase() === 'b') {
+        decoded = Buffer.from(match[3], 'base64').toString(charset as BufferEncoding);
+      } else {
+        const qValue = match[3].replace(/_/g, ' ');
+        const bytes: number[] = [];
+        for (let i = 0; i < qValue.length; i += 1) {
+          if (qValue[i] === '=' && /^[0-9a-f]{2}$/i.test(qValue.slice(i + 1, i + 3))) {
+            bytes.push(parseInt(qValue.slice(i + 1, i + 3), 16));
+            i += 2;
+          } else {
+            bytes.push(qValue.charCodeAt(i) & 0xff);
+          }
+        }
+        decoded = Buffer.from(bytes).toString(charset as BufferEncoding);
+      }
+    } catch {
+      // Keep the raw encoded word; draft validation still fails closed.
+      decoded = match[0];
+    }
+
+    output += decoded;
+    lastIndex = pattern.lastIndex;
+    previousWasEncoded = true;
+  }
+  return output + text.slice(lastIndex);
+}
+
+export function buildReferencesHeader(existing: unknown, parentMessageId: unknown): string {
+  const values: string[] = [];
+  const collect = (source: unknown) => {
+    (String(source ?? '').match(/<[^<>\r\n]+>/g) || []).forEach((item) => {
+      if (!values.includes(item)) values.push(item);
+    });
+  };
+  collect(existing);
+  collect(parentMessageId);
+  return values.join(' ');
+}
+
+export type ThreadAnchor = {
+  threadId: string;
+  rfcMessageId: string;
+  references: string;
+  subject: string;
+};
+
+/**
+ * Reads the anchor message a follow-up must reply to. The RFC Message-ID and
+ * the original Subject both come from Gmail at send time rather than from the
+ * Sheet, because Gmail threads on those exact values.
+ */
+export async function getThreadAnchor(accessToken: string, messageId: string): Promise<ThreadAnchor> {
+  const message = await gmailRequest<{
+    threadId?: string;
+    payload?: { headers?: { name: string; value: string }[] };
+  }>(
+    `/messages/${encodeURIComponent(messageId)}?format=metadata` +
+      '&metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=Subject',
+    { method: 'GET' },
+    accessToken
+  );
+
+  const headers: Record<string, string> = {};
+  (message.payload?.headers || []).forEach((header) => {
+    headers[header.name.toLowerCase()] = header.value;
+  });
+
+  const rfcMessageId = headers['message-id'] || '';
+  const subject = decodeRfc2047Header(headers.subject || '');
+  if (!message.threadId) throw new GmailError('The stored Gmail message has no thread.', 409);
+  if (!rfcMessageId) throw new GmailError('The follow-up anchor has no RFC Message-ID header.', 409);
+  if (!subject) throw new GmailError('The initial Gmail message has no Subject header.', 409);
+
+  return { threadId: message.threadId, rfcMessageId, references: headers.references || '', subject };
 }

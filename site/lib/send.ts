@@ -28,10 +28,12 @@ import {
 import {
   assertSendAsAuthorized,
   buildRawMime,
+  buildReferencesHeader,
   createDraft,
   deleteDraft,
   draftStillExists,
   findSentMessageByAttempt,
+  getThreadAnchor,
   sendDraft,
   type SentMessage
 } from './gmail';
@@ -136,7 +138,10 @@ async function persistSendSuccess(
   const evidence: CellUpdate[] = [
     { header: LEAD_HEADERS.GMAIL_THREAD_ID, value: sent.threadId },
     { header: LEAD_HEADERS.CAMPAIGN_ID, value: CONFIG.CAMPAIGN_ID },
-    { header: headers.messageId, value: sent.rfcMessageId || sent.messageId },
+    // The Gmail API id, not the RFC Message-ID: this is what the Apps Script
+    // project stores in the same column and what reply detection resolves a
+    // thread from. Storing the RFC id here would break both.
+    { header: headers.messageId, value: sent.messageId },
     { header: headers.sentAt, value: sent.sentAt.toISOString() },
     { header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() }
   ];
@@ -268,20 +273,38 @@ export async function sendOneLead(
   }
 
   const attemptId = crypto.randomUUID();
-  const threadId = action === ACTION.INITIAL ? '' : text(record, LEAD_HEADERS.GMAIL_THREAD_ID);
-  const initialMessageId = text(record, LEAD_HEADERS.INITIAL_MESSAGE_ID);
+  let threadId = '';
+  let subject = message.subject;
+  let inReplyTo: string | undefined;
+  let references: string | undefined;
+
+  if (action !== ACTION.INITIAL) {
+    // Gmail threads on the anchor's RFC Message-ID and its exact Subject, and
+    // both live in Gmail rather than the Sheet, so they are read at send time.
+    const anchorId =
+      action === ACTION.FOLLOW_UP_1
+        ? text(record, LEAD_HEADERS.INITIAL_MESSAGE_ID)
+        : text(record, LEAD_HEADERS.FOLLOW_UP_1_MESSAGE_ID) || text(record, LEAD_HEADERS.INITIAL_MESSAGE_ID);
+    if (!anchorId) return { outcome: 'SKIPPED', reason: 'No Gmail anchor to thread this follow-up onto.' };
+
+    const anchor = await getThreadAnchor(accessToken, anchorId);
+    threadId = anchor.threadId;
+    subject = anchor.subject;
+    inReplyTo = anchor.rfcMessageId;
+    references = buildReferencesHeader(anchor.references, anchor.rfcMessageId);
+  }
 
   const raw = buildRawMime({
     to: recipient,
     cc: message.cc,
-    subject: message.subject,
+    subject,
     plainBody: message.plainBody,
     htmlBody: message.htmlBody,
     leadId: id,
     action,
     attemptId,
-    inReplyTo: action === ACTION.INITIAL ? undefined : initialMessageId || undefined,
-    references: action === ACTION.INITIAL ? undefined : initialMessageId || undefined
+    inReplyTo,
+    references
   });
 
   // Draft first: this is what makes an interrupted send recoverable.

@@ -75,6 +75,7 @@ export const CONFIG = {
     DAILY_SEND_LIMIT: 1,
     MAX_INITIALS_PER_RUN: 1,
     MAX_FOLLOW_UPS_PER_RUN: 1,
+    MAX_REPLY_CHECKS_PER_RUN: 50,
     MAX_LOG_MESSAGE_LENGTH: 500
   }
 } as const;
