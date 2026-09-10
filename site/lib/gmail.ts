@@ -42,8 +42,14 @@ async function gmailRequest<T>(path: string, init: RequestInit, accessToken: str
       // Keep the raw text.
     }
     if (response.status === 401 || response.status === 403) {
+      // "Insufficient authentication scopes" names neither the missing scope
+      // nor the reason, so ask Google what this token actually carries and say
+      // so precisely rather than sending the operator away to guess.
+      const detailText = /insufficient authentication scopes|insufficient permission/i.test(message)
+        ? await describeScopeGap(accessToken)
+        : '';
       throw new GmailError(
-        `Gmail refused the request. The session may lack mail scopes — sign out and back in. Google said: ${message}`,
+        `Gmail refused the request. ${detailText || 'Sign out and back in to refresh access.'} Google said: ${message}`,
         response.status
       );
     }
@@ -380,4 +386,42 @@ export async function getThreadAnchor(accessToken: string, messageId: string): P
   if (!subject) throw new GmailError('The initial Gmail message has no Subject header.', 409);
 
   return { threadId: message.threadId, rfcMessageId, references: headers.references || '', subject };
+}
+
+/** Gmail scopes this console needs, with what each one is for. */
+const REQUIRED_GMAIL_SCOPES: [string, string][] = [
+  ['https://www.googleapis.com/auth/gmail.compose', 'compose the draft'],
+  ['https://www.googleapis.com/auth/gmail.readonly', 'confirm what was sent'],
+  ['https://www.googleapis.com/auth/gmail.settings.basic', 'verify the Send-As identity']
+];
+
+/**
+ * Turns "insufficient authentication scopes" into a sentence naming the
+ * scopes the current token is missing and where to grant them.
+ */
+async function describeScopeGap(accessToken: string): Promise<string> {
+  try {
+    const response = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+      { cache: 'no-store' }
+    );
+    if (!response.ok) return 'Sign out and back in to refresh access.';
+
+    const body = (await response.json()) as { scope?: string };
+    const granted = String(body.scope || '').split(' ').filter(Boolean);
+    const missing = REQUIRED_GMAIL_SCOPES.filter(([scope]) => !granted.includes(scope));
+
+    if (!missing.length) {
+      return 'This token carries every Gmail scope required, so the refusal is not about scopes — check the Gmail API is enabled in the Cloud project.';
+    }
+
+    const names = missing.map(([scope, why]) => `${scope.split('/auth/')[1]} (to ${why})`).join(', ');
+    return (
+      `This session is missing: ${names}. ` +
+      'Add those scopes under Google Auth Platform → Data Access in the Cloud project, save, then sign out and back in — ' +
+      'Google only issues scopes registered there, and a token refreshed from an older grant keeps the older scopes.'
+    );
+  } catch {
+    return 'Sign out and back in to refresh access.';
+  }
 }
