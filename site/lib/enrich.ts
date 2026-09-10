@@ -111,9 +111,13 @@ async function fetchPage(url: string): Promise<string> {
       signal: controller.signal,
       redirect: 'follow',
       headers: {
-        // Identify honestly rather than impersonating a browser.
-        'User-Agent': 'AsaiVerse-BrandOutreach/1.0 (+partnerships research; contact taran@asaiverse.com)',
-        Accept: 'text/html,application/xhtml+xml'
+        // The conventional bot format: still honest about being a crawler, but
+        // shaped the way WAFs expect, since a bare product token is widely
+        // blocked outright and was returning nothing.
+        'User-Agent':
+          'Mozilla/5.0 (compatible; AsaiverseOutreachBot/1.0; +https://asaiverse.com; contact taran@asaiverse.com)',
+        Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en;q=0.9'
       },
       cache: 'no-store'
     });
@@ -230,6 +234,10 @@ export type EnrichmentResult = {
   category: string;
   sourceUrl: string;
   pagesTried: number;
+  /** Why nothing was found, when nothing was. */
+  diagnosis: string;
+  pagesFetched: number;
+  rawEmailsSeen: number;
 };
 
 /**
@@ -238,14 +246,40 @@ export type EnrichmentResult = {
  */
 export async function enrichCompany(website: unknown, companyName: unknown): Promise<EnrichmentResult> {
   const base = normalizeImportWebsite(website);
-  const empty: EnrichmentResult = { email: '', description: '', category: '', sourceUrl: '', pagesTried: 0 };
-  if (!base) return empty;
+  const empty: EnrichmentResult = {
+    email: '',
+    description: '',
+    category: '',
+    sourceUrl: '',
+    pagesTried: 0,
+    pagesFetched: 0,
+    rawEmailsSeen: 0,
+    diagnosis: ''
+  };
+  if (!base) {
+    return {
+      ...empty,
+      diagnosis: `The Website cell (${safeDisplayText(website) || 'blank'}) is not a usable URL.`
+    };
+  }
 
   let host = '';
   try {
     host = new URL(base).hostname.replace(/^www\./i, '').toLowerCase();
   } catch {
-    return empty;
+    return { ...empty, diagnosis: 'The Website cell could not be parsed as a URL.' };
+  }
+
+  // Some hosts answer only on the www form, or only over http.
+  const origins = [base.replace(/\/$/, '')];
+  try {
+    const url = new URL(base);
+    const swapped = url.hostname.startsWith('www.')
+      ? url.hostname.replace(/^www\./i, '')
+      : `www.${url.hostname}`;
+    origins.push(`${url.protocol}//${swapped}`);
+  } catch {
+    // Single origin is fine.
   }
 
   const candidates: string[] = [];
@@ -253,34 +287,51 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
   let title = '';
   let sourceUrl = '';
   let pagesTried = 0;
+  let pagesFetched = 0;
 
-  for (const path of CANDIDATE_PATHS) {
-    const url = `${base.replace(/\/$/, '')}${path}`;
-    const html = await fetchPage(url);
-    pagesTried += 1;
-    if (!html) continue;
+  outer: for (const origin of origins) {
+    for (const path of CANDIDATE_PATHS) {
+      const url = `${origin}${path}`;
+      const html = await fetchPage(url);
+      pagesTried += 1;
+      if (!html) continue;
+      pagesFetched += 1;
 
-    if (!description) description = extractMetaDescription(html);
-    if (!title) title = extractTitle(html);
+      if (!description) description = extractMetaDescription(html);
+      if (!title) title = extractTitle(html);
 
-    const pageEmails = extractEmails(html);
-    if (pageEmails.length) {
-      candidates.push(...pageEmails);
-      if (!sourceUrl) sourceUrl = url;
+      const pageEmails = extractEmails(html);
+      if (pageEmails.length) {
+        candidates.push(...pageEmails);
+        if (!sourceUrl) sourceUrl = url;
+      }
+      // A published partnerships channel is the best outcome; stop early.
+      if (chooseBestEmail(candidates, host)) break outer;
     }
-    // A published partnerships channel is the best outcome; stop early.
-    if (chooseBestEmail(candidates, host)) break;
+    if (pagesFetched) break; // The first origin that answered is the right one.
   }
 
   const email = chooseBestEmail(candidates, host);
   const haystack = `${companyName ?? ''} ${title} ${description}`;
   const guessed = guessCategory(haystack);
 
+  let diagnosis = '';
+  if (!pagesFetched) {
+    diagnosis = `No page on ${host} could be read — the site blocked the request, timed out, or returned no HTML.`;
+  } else if (!candidates.length) {
+    diagnosis = `Read ${pagesFetched} page(s) on ${host} but found no email address in the HTML. The contact details are probably rendered by JavaScript or hidden behind a form.`;
+  } else if (!email) {
+    diagnosis = `Found ${candidates.length} address(es) on ${host}, but none looked like a business contact channel (careers, privacy, no-reply and third-party addresses are rejected).`;
+  }
+
   return {
     email,
     description: truncate(description, 500),
     category: guessed && CATEGORY_VALUES.includes(guessed as never) ? guessed : canonicalizeImportedCategory(guessed),
     sourceUrl: email ? sourceUrl || base : '',
-    pagesTried
+    pagesTried,
+    pagesFetched,
+    rawEmailsSeen: candidates.length,
+    diagnosis
   };
 }

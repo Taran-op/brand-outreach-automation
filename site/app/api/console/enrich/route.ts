@@ -38,9 +38,44 @@ export async function POST() {
     const records = await getLeadRows(operator.accessToken);
     const candidates = records.filter(needsEnrichment).slice(0, MAX_ROWS_PER_RUN);
 
+    // "Nothing happened" is the most confusing outcome, so when there is no
+    // work say which condition excluded every row rather than staying silent.
+    if (!candidates.length) {
+      const newRows = records.filter(
+        (record) => normalizeStatus(leadValue(record, LEAD_HEADERS.STATUS)) === STATUS.NEW
+      );
+      const withEmail = newRows.filter((record) =>
+        isValidSingleEmail(normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)))
+      ).length;
+      const withoutWebsite = newRows.filter(
+        (record) => !safeDisplayText(leadValue(record, LEAD_HEADERS.WEBSITE))
+      ).length;
+      const withoutCompany = newRows.filter(
+        (record) => !safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY))
+      ).length;
+
+      return Response.json({
+        job: 'ENRICH',
+        mode: 'RESEARCH',
+        processed: 0,
+        sent: 0,
+        dryRun: 0,
+        testSent: 0,
+        skipped: 0,
+        replies: 0,
+        errors: 0,
+        message:
+          `Nothing to research. Of ${records.length} lead(s), ${newRows.length} are NEW; ` +
+          `${withEmail} already have an email, ${withoutWebsite} have no Website, ` +
+          `${withoutCompany} have no Company. Research needs a NEW row with a Company and a ` +
+          'Website but no email yet.'
+      });
+    }
+
     let emailsFound = 0;
     let detailsFilled = 0;
     let noneFound = 0;
+    let failureExample = '';
 
     for (const record of candidates) {
       const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
@@ -61,7 +96,10 @@ export async function POST() {
         emailsFound += 1;
       } else {
         noneFound += 1;
-        noteParts.push('No published contact address found on the company site.');
+        // Record why, so a run that finds nothing is debuggable from the Sheet
+        // rather than looking like the feature simply does not work.
+        noteParts.push(result.diagnosis || 'No published contact address found on the company site.');
+        if (!failureExample) failureExample = result.diagnosis;
       }
 
       if (!safeDisplayText(leadValue(record, LEAD_HEADERS.CATEGORY)) && result.category) {
@@ -101,7 +139,7 @@ export async function POST() {
       replies: 0,
       errors: 0,
       message: candidates.length
-        ? `${candidates.length} researched, ${emailsFound} address(es) found. Rows stay NEW — review and approve before anything is sent.`
+        ? `${candidates.length} researched, ${emailsFound} address(es) found. Rows stay NEW — review and approve before anything is sent.${emailsFound === 0 && failureExample ? ` Example: ${failureExample}` : ''}`
         : 'No rows needed research. Enrichment looks at NEW rows that have a website but no email.',
       leadsRemaining: records.filter(needsEnrichment).length - candidates.length,
       leadIds: candidates.map(leadId)

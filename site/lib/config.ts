@@ -24,7 +24,7 @@ export const CONFIG = {
   TIME_ZONE: 'Asia/Kolkata',
 
   EVENT: {
-    NAME: 'AsaiVerse',
+    NAME: 'Asaiverse',
     ONE_LINE_DESCRIPTION:
       'a two-day esports, gaming, technology, creator and entertainment event',
     DATE_PREPOSITION: 'in',
@@ -36,7 +36,7 @@ export const CONFIG = {
   CAMPAIGN_SEND_CUTOFF_ISO: '2027-01-31',
 
   SENDER: {
-    NAME: 'Taran',
+    NAME: 'Taranjeet Singh',
     TITLE: 'Lead – Brand Connect',
     SIGN_OFF: 'Warm regards,',
     PHONE: '',
