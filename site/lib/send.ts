@@ -37,6 +37,7 @@ import {
   sendDraft,
   type SentMessage
 } from './gmail';
+import { isSystemDisabled } from './killswitch';
 import { getLeadRows, leadValue, type LeadRecord } from './sheets';
 import { appendLogRow, updateLeadCells, type CellUpdate } from './sheets-write';
 import { buildEmailForLead, hasPendingAction, isConfiguredCcEmail, normalizeStatus } from './templates';
@@ -397,6 +398,12 @@ export async function runSendJob(
   if (!sendsArmed()) {
     throw Object.assign(
       new Error('Sending is not armed on this deployment. Set CONSOLE_SENDS_ENABLED=true to enable it.'),
+      { status: 409 }
+    );
+  }
+  if (await isSystemDisabled(accessToken)) {
+    throw Object.assign(
+      new Error('Emergency disable is active. Clear it in the Console Control tab to resume sending.'),
       { status: 409 }
     );
   }

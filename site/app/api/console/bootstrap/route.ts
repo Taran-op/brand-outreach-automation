@@ -2,6 +2,7 @@ import { CONFIG, spreadsheetUrl } from '@/lib/config';
 import { CATEGORY_VALUES, STATUS_VALUES } from '@/lib/constants';
 import { summarize, toLead } from '@/lib/leads';
 import { getLeadRows, getLogEntries } from '@/lib/sheets';
+import { isSystemDisabled } from '@/lib/killswitch';
 import { campaignWindowOpen, countSentToday, sendsArmed } from '@/lib/send';
 import { errorResponse, requireOperator } from '@/lib/session';
 
@@ -20,7 +21,8 @@ export async function GET() {
     const allLeads = records.map((record) => toLead(record, now));
     const { statusCounts, metrics } = summarize(allLeads);
     const leads = allLeads.slice(0, CONFIG.UI.MAX_LEADS_RETURNED);
-    const armed = sendsArmed() && campaignWindowOpen(now);
+    const disabled = await isSystemDisabled(operator.accessToken);
+    const armed = sendsArmed() && campaignWindowOpen(now) && !disabled;
     const sentToday = countSentToday(records, now);
 
     return Response.json({
@@ -49,7 +51,7 @@ export async function GET() {
         sendsEnabled: armed,
         dryRun: false,
         testMode: false,
-        systemDisabled: false,
+        systemDisabled: disabled,
         dailyLimit: CONFIG.SAFETY.DAILY_SEND_LIMIT,
         sentToday,
         remainingToday: armed ? Math.max(0, CONFIG.SAFETY.DAILY_SEND_LIMIT - sentToday) : 0,

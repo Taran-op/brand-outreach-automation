@@ -41,7 +41,8 @@ const SERVER_ROUTES: Record<string, string> = {
   uiBulkApprove: '/api/console/approve',
   uiImportLeads: '/api/console/import',
   uiImportWorkbook: '/api/console/import-workbook',
-  uiRunJob: '/api/console/job'
+  uiRunJob: '/api/console/job',
+  uiEmergencyDisable: '/api/console/disable'
 };
 
 /**
