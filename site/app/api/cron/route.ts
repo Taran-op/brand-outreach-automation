@@ -1,7 +1,9 @@
 import { assertCronAuthorized, getAutomationAccessToken } from '@/lib/automation';
 import { CONFIG } from '@/lib/config';
+import { DiscoveryNotConfigured } from '@/lib/discover';
 import { isSystemDisabled } from '@/lib/killswitch';
 import { dueFollowUpAction } from '@/lib/leads';
+import { autoApproveEnabled, runAutoApprove, runDiscovery, runResearch } from '@/lib/pipeline';
 import { runReplyScan } from '@/lib/replies';
 import { campaignWindowOpen, runSendJob, sendsArmed } from '@/lib/send';
 import { appendLogRow } from '@/lib/sheets-write';
@@ -11,29 +13,46 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+const discoveryEnabled = () => process.env.AUTOMATION_DISCOVER === 'true';
+const researchEnabled = () => process.env.AUTOMATION_RESEARCH === 'true';
+
 /**
- * The unattended run.
+ * The unattended daily run, in this order for a reason:
  *
- * Order matters and is not arbitrary: replies are scanned *first* so that an
- * opt-out or bounce received since the last run suppresses a lead before this
- * same invocation could email it again.
+ *   1. replies    — an opt-out received overnight must suppress its lead
+ *                   before this same run could email it again
+ *   2. discover   — add candidate brands (AUTOMATION_DISCOVER)
+ *   3. research   — find their addresses (AUTOMATION_RESEARCH)
+ *   4. approve    — clear the gates without a person (CONSOLE_AUTO_APPROVE)
+ *   5. follow-ups — continue conversations already started
+ *   6. initials   — first contact (AUTOMATION_SEND_INITIALS)
  *
- * It deliberately does not send initials. First contact with a new brand stays
- * behind a human approving the row; once approved, follow-ups continue on
- * their own. Set AUTOMATION_SEND_INITIALS=true to include approved initials.
+ * Every stage is bounded by the same caps as the buttons, and a failure in an
+ * optional stage is recorded and skipped rather than halting the run.
  */
 export async function GET(request: Request) {
   try {
     assertCronAuthorized(request);
     const accessToken = await getAutomationAccessToken();
     const startedAt = new Date();
+    const results: Record<string, unknown> = {};
 
-    const replies = await runReplyScan(accessToken, CONFIG.SAFETY.MAX_REPLY_CHECKS_PER_RUN);
+    results.replies = await runReplyScan(accessToken, CONFIG.SAFETY.MAX_REPLY_CHECKS_PER_RUN);
+
+    if (discoveryEnabled()) {
+      try {
+        results.discover = await runDiscovery(accessToken, 17);
+      } catch (error) {
+        results.discover = error instanceof DiscoveryNotConfigured ? error.message : String(error);
+      }
+    }
+
+    if (researchEnabled()) results.research = await runResearch(accessToken, 25);
 
     const armed = sendsArmed() && campaignWindowOpen(startedAt) && !(await isSystemDisabled(accessToken));
-    const results: Record<string, unknown> = { replies };
 
     if (armed) {
+      if (autoApproveEnabled()) results.approve = await runAutoApprove(accessToken);
       results.followUps = await runSendJob(accessToken, 'FOLLOW_UPS', dueFollowUpAction);
       if (process.env.AUTOMATION_SEND_INITIALS === 'true') {
         results.initials = await runSendJob(accessToken, 'INITIALS', dueFollowUpAction);
@@ -45,7 +64,10 @@ export async function GET(request: Request) {
     await appendLogRow(accessToken, {
       action: 'CRON',
       result: 'SUCCESS',
-      message: `Scheduled run: ${replies.message} Sending ${armed ? 'ran' : 'skipped'}.`
+      message:
+        `Scheduled run: ${(results.replies as { message: string }).message} ` +
+        `Discovery ${discoveryEnabled() ? 'ran' : 'off'}, research ${researchEnabled() ? 'ran' : 'off'}, ` +
+        `sending ${armed ? 'ran' : 'skipped'}.`
     });
 
     return Response.json({ ok: true, startedAt: startedAt.toISOString(), ...results });
