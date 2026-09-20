@@ -54,6 +54,38 @@ const findImportColumn = (headers: string[], aliases: string[]): number => {
   return -1;
 };
 
+/**
+ * Second pass for headers that name the field but decorate it — "Company
+ * Name (Official)", "Contact (Email/Phone)", "Website URL". Each key claims
+ * the first unclaimed header containing its stem, most specific keys first so
+ * "contact name" is taken by contactName before "contact" can see it.
+ */
+const FUZZY_STEMS: [string, string[]][] = [
+  ['contactName', ['contactname', 'contactperson']],
+  ['email', ['email', 'mail']],
+  ['personalization', ['personali']],
+  ['company', ['company', 'brand', 'organisation', 'organization']],
+  ['website', ['website', 'url', 'domain', 'site']],
+  ['category', ['category', 'segment', 'industry', 'sector', 'type']],
+  ['notes', ['note', 'remark', 'comment', 'description', 'focus']],
+  ['contact', ['contact']],
+  ['india', ['india']]
+];
+
+const fillFuzzyColumns = (headers: string[], map: ImportMap): void => {
+  const claimed = new Set(Object.values(map).filter((index) => index >= 0));
+  for (const [key, stems] of FUZZY_STEMS) {
+    if (map[key] >= 0) continue;
+    const index = headers.findIndex(
+      (header, at) => !claimed.has(at) && stems.some((stem) => header.includes(stem))
+    );
+    if (index >= 0) {
+      map[key] = index;
+      claimed.add(index);
+    }
+  }
+};
+
 export function detectImportLayout(rows: unknown[][]): ImportLayout {
   const firstRow = rows.length ? rows[0] : [];
   const headers = firstRow.map(normalizeImportHeader);
@@ -62,6 +94,7 @@ export function detectImportLayout(rows: unknown[][]): ImportLayout {
   Object.keys(IMPORT_HEADER_ALIASES).forEach((key) => {
     map[key] = findImportColumn(headers, IMPORT_HEADER_ALIASES[key]);
   });
+  if (Object.values(map).some((index) => index >= 0)) fillFuzzyColumns(headers, map);
 
   const recognized = Object.keys(map).filter((key) => map[key] >= 0).length;
   if (recognized >= 2 || map.email >= 0) return { map, headerRows: 1, kind: 'HEADER' };
@@ -131,8 +164,9 @@ export function canonicalizeImportedCategory(value: unknown): string {
   if (exact) return exact;
 
   const text = original.toLowerCase();
+  if (/esports|e-sports|tournament|communit/.test(text)) return 'Gaming Community';
+  if (/game dev|game develop|game publish|game studio|interactive entertainment/.test(text)) return 'Technology Startup';
   if (/creator|streamer|entertainment|comic|anime|media|music/.test(text)) return 'Creator / Entertainment';
-  if (/communit/.test(text)) return 'Gaming Community';
   if (/mouse|mice|mousepad|deskmat|keyboard|chair|desk|controller|gaming access|peripheral/.test(text)) {
     return 'Gaming Accessories';
   }
