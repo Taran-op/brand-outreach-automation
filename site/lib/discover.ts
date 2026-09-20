@@ -94,15 +94,42 @@ export type Candidate = {
 
 type SearchItem = { title?: string; link?: string; snippet?: string };
 
-async function searchOnce(query: string): Promise<SearchItem[]> {
-  const key = process.env.GOOGLE_CSE_KEY;
-  const cx = process.env.GOOGLE_CSE_ID;
-  if (!key || !cx) {
-    throw new DiscoveryNotConfigured(
-      'Discovery needs GOOGLE_CSE_KEY and GOOGLE_CSE_ID. Enable the Custom Search API in the Cloud project, create an API key, and create a Programmable Search Engine set to search the whole web.'
-    );
+/**
+ * Brave Search: whole-web by default, one key, no engine to configure. This is
+ * the primary provider because Google's Programmable Search Engine will not
+ * enable "search the entire web" on every account, and without that setting
+ * it only searches sites you list — useless for discovery.
+ */
+async function searchBrave(query: string, key: string): Promise<SearchItem[]> {
+  const url =
+    'https://api.search.brave.com/res/v1/web/search' +
+    `?q=${encodeURIComponent(query)}&count=10&country=IN&search_lang=en&safesearch=moderate`;
+
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json', 'X-Subscription-Token': key },
+    cache: 'no-store'
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    if (response.status === 429) {
+      throw new DiscoveryNotConfigured('Brave Search quota is exhausted for now (the free plan allows 2,000 queries a month).');
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new DiscoveryNotConfigured('Brave rejected BRAVE_SEARCH_KEY. Check the key at brave.com/search/api.');
+    }
+    throw new Error(`Brave Search failed (${response.status}): ${safeDisplayText(detail).slice(0, 200)}`);
   }
 
+  const body = (await response.json()) as { web?: { results?: { title?: string; url?: string; description?: string }[] } };
+  return (body.web?.results || []).map((item) => ({
+    title: item.title,
+    link: item.url,
+    snippet: item.description
+  }));
+}
+
+/** Google Custom Search, kept as the fallback for accounts where it works. */
+async function searchGoogle(query: string, key: string, cx: string): Promise<SearchItem[]> {
   const url =
     'https://www.googleapis.com/customsearch/v1' +
     `?key=${encodeURIComponent(key)}&cx=${encodeURIComponent(cx)}` +
@@ -119,6 +146,20 @@ async function searchOnce(query: string): Promise<SearchItem[]> {
 
   const body = (await response.json()) as { items?: SearchItem[] };
   return body.items || [];
+}
+
+async function searchOnce(query: string): Promise<SearchItem[]> {
+  const brave = process.env.BRAVE_SEARCH_KEY;
+  if (brave) return searchBrave(query, brave);
+
+  const key = process.env.GOOGLE_CSE_KEY;
+  const cx = process.env.GOOGLE_CSE_ID;
+  if (key && cx) return searchGoogle(query, key, cx);
+
+  throw new DiscoveryNotConfigured(
+    'Discovery needs a search key. Set BRAVE_SEARCH_KEY (from brave.com/search/api, free tier), ' +
+      'or GOOGLE_CSE_KEY and GOOGLE_CSE_ID for a Programmable Search Engine that can search the whole web.'
+  );
 }
 
 /**
