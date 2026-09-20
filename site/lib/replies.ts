@@ -17,6 +17,7 @@ import {
   type ActionValue
 } from './constants';
 import { GmailError } from './gmail';
+import { findRepliesInMailbox, mailboxConfigured, type InboundMessage } from './hostinger';
 import { getLeadRows, leadValue, type LeadRecord } from './sheets';
 import { appendLogRow, updateLeadCells, type CellUpdate } from './sheets-write';
 import { hasPendingAction, normalizeStatus } from './templates';
@@ -154,10 +155,12 @@ export function containsStrongOptOut(text: unknown): boolean {
   );
 }
 
-const isBounceMessage = (message: GmailMessage): boolean => {
-  const from = headerOf(message, 'From').toLowerCase();
-  const subject = headerOf(message, 'Subject').toLowerCase();
-  const contentType = headerOf(message, 'Content-Type').toLowerCase();
+type HeaderGetter = (name: string) => string;
+
+const isBounce = (header: HeaderGetter): boolean => {
+  const from = header('From').toLowerCase();
+  const subject = header('Subject').toLowerCase();
+  const contentType = header('Content-Type').toLowerCase();
   return (
     /mailer-daemon|postmaster/.test(from) ||
     /delivery status notification|undeliverable|delivery failure|failure notice|returned mail/.test(subject) ||
@@ -165,14 +168,11 @@ const isBounceMessage = (message: GmailMessage): boolean => {
   );
 };
 
-const isAutomatedResponse = (message: GmailMessage): boolean => {
-  const autoSubmitted = headerOf(message, 'Auto-Submitted').toLowerCase();
-  const precedence = headerOf(message, 'Precedence').toLowerCase();
-  const subject = headerOf(message, 'Subject').toLowerCase();
-  const autoReply =
-    headerOf(message, 'X-Autoreply') ||
-    headerOf(message, 'X-Auto-Response-Suppress') ||
-    headerOf(message, 'X-Autorespond');
+const isAutomated = (header: HeaderGetter): boolean => {
+  const autoSubmitted = header('Auto-Submitted').toLowerCase();
+  const precedence = header('Precedence').toLowerCase();
+  const subject = header('Subject').toLowerCase();
+  const autoReply = header('X-Autoreply') || header('X-Auto-Response-Suppress') || header('X-Autorespond');
 
   if (autoSubmitted && autoSubmitted !== 'no') return true;
   if (autoReply) return true;
@@ -193,7 +193,7 @@ function collectParts(part: GmailPart | undefined, plain: string[], html: string
   (part.parts || []).forEach((child) => collectParts(child, plain, html));
 }
 
-const extractPlainText = (message: GmailMessage): string => {
+const gmailPlainText = (message: GmailMessage): string => {
   const plain: string[] = [];
   const html: string[] = [];
   collectParts(message.payload, plain, html);
@@ -210,9 +210,45 @@ export type DetectedResponse = {
 };
 
 /**
- * Inspects the stored thread and returns the single most important thing that
- * happened in it. Opt-out outranks everything, because suppression must never
- * lose to a friendlier signal further down the thread.
+ * One shape for a message from either mailbox, so the classifier below does
+ * not care where it came from.
+ */
+type Inbound = {
+  id: string;
+  threadId: string;
+  header: HeaderGetter;
+  plainText: () => string;
+  receivedAt: Date;
+  /** Sent by us — only Gmail can know this, via the SENT label. */
+  isOurs: boolean;
+  isDraft: boolean;
+};
+
+const fromGmail = (message: GmailMessage, fallbackThread: string): Inbound => ({
+  id: message.id,
+  threadId: message.threadId || fallbackThread,
+  header: (name) => headerOf(message, name),
+  plainText: () => gmailPlainText(message),
+  receivedAt: message.internalDate ? new Date(Number(message.internalDate)) : new Date(),
+  isOurs: (message.labelIds || []).includes('SENT'),
+  isDraft: (message.labelIds || []).includes('DRAFT')
+});
+
+const fromHostinger = (message: InboundMessage, threadId: string): Inbound => ({
+  id: message.id,
+  threadId,
+  header: (name) => message.headers[name.toLowerCase()] || '',
+  plainText: () => message.plainText,
+  receivedAt: message.receivedAt,
+  isOurs: false,
+  isDraft: false
+});
+
+/**
+ * Inspects everything that answered our outreach — the Gmail thread, which
+ * holds what we sent, and the Hostinger mailbox, which holds what came back —
+ * and returns the single most important thing that happened. Opt-out outranks
+ * everything, because suppression must never lose to a friendlier signal.
  */
 export async function detectThreadResponse(
   accessToken: string,
@@ -237,62 +273,82 @@ export async function detectThreadResponse(
     `/threads/${encodeURIComponent(initial.threadId)}?format=full`,
     accessToken
   );
+  const gmailMessages = thread.messages || [];
+  if (!gmailMessages.some((message) => message.id === initialMessageId)) {
+    throw new Error('Initial Message ID is not present in its resolved Gmail thread.');
+  }
 
-  const messages = [...(thread.messages || [])].sort(
-    (a, b) => Number(a.internalDate || 0) - Number(b.internalDate || 0)
-  );
-
-  const knownSent: Record<string, ActionValue> = { [initialMessageId]: ACTION.INITIAL };
+  const knownSent = new Set<string>([initialMessageId]);
   const followUp1 = safeDisplayText(leadValue(record, LEAD_HEADERS.FOLLOW_UP_1_MESSAGE_ID));
   const followUp2 = safeDisplayText(leadValue(record, LEAD_HEADERS.FOLLOW_UP_2_MESSAGE_ID));
-  if (followUp1) knownSent[followUp1] = ACTION.FOLLOW_UP_1;
-  if (followUp2) knownSent[followUp2] = ACTION.FOLLOW_UP_2;
+  if (followUp1) knownSent.add(followUp1);
+  if (followUp2) knownSent.add(followUp2);
 
-  let foundInitial = false;
+  // The RFC Message-IDs of what we sent are what a reply's In-Reply-To and
+  // References headers point at; they live in Gmail, so read them there.
+  const ourRfcIds = gmailMessages
+    .filter((message) => knownSent.has(message.id))
+    .map((message) => headerOf(message, 'Message-ID'))
+    .filter(Boolean);
+  const sentTo = normalizeEmail(leadValue(record, LEAD_HEADERS.SENT_TO_EMAIL));
+  const initialSubject = headerOf(gmailMessages.find((m) => m.id === initialMessageId)!, 'Subject');
+
+  const inbound: Inbound[] = gmailMessages.map((message) => fromGmail(message, initial.threadId!));
+
+  if (mailboxConfigured()) {
+    const external = await findRepliesInMailbox(ourRfcIds, sentTo, initialSubject);
+    // A message forwarded into Gmail as well would appear twice; the RFC id
+    // de-duplicates it.
+    const seenRfc = new Set(inbound.map((m) => m.header('Message-ID')).filter(Boolean));
+    for (const message of external) {
+      const rfc = message.headers['message-id'] || '';
+      if (rfc && seenRfc.has(rfc)) continue;
+      inbound.push(fromHostinger(message, initial.threadId!));
+    }
+  }
+
+  inbound.sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
+  const initialAt = inbound.find((m) => m.id === initialMessageId)?.receivedAt.getTime() ?? 0;
+
   let humanReply: DetectedResponse | null = null;
   let optOut: DetectedResponse | null = null;
   let bounce: DetectedResponse | null = null;
   let autoReply: DetectedResponse | null = null;
   let manualOutbound: DetectedResponse | null = null;
 
-  for (const message of messages) {
-    if (message.id === initialMessageId) {
-      foundInitial = true;
-      continue;
-    }
-    // Only messages after our initial are relevant, and drafts are not replies.
-    if (!foundInitial || (message.labelIds || []).includes('DRAFT')) continue;
+  for (const message of inbound) {
+    if (message.id === initialMessageId || message.isDraft) continue;
+    // Only what happened after our initial can be a response to it.
+    if (message.receivedAt.getTime() < initialAt) continue;
 
+    const fromAddresses = extractEmailAddresses(message.header('From'));
     const base = {
       messageId: message.id,
-      threadId: message.threadId || initial.threadId,
-      from: extractEmailAddresses(headerOf(message, 'From'))[0] || '',
-      receivedAt: message.internalDate ? new Date(Number(message.internalDate)) : new Date()
+      threadId: message.threadId,
+      from: fromAddresses[0] || '',
+      receivedAt: message.receivedAt
     };
 
-    if ((message.labelIds || []).includes('SENT')) {
-      // Something we sent. If it is not one of our recorded automated sends,
-      // a human has stepped into the thread and automation should stand down.
-      if (!knownSent[message.id] && !manualOutbound) {
-        manualOutbound = { type: 'MANUAL_OUTBOUND', ...base };
-      }
+    if (message.isOurs) {
+      // Something we sent that is not a recorded automated send means a human
+      // has stepped into the thread and automation should stand down.
+      if (!knownSent.has(message.id) && !manualOutbound) manualOutbound = { type: 'MANUAL_OUTBOUND', ...base };
       continue;
     }
 
-    const fromAddresses = extractEmailAddresses(headerOf(message, 'From'));
     // Internal CC colleagues replying-all are not the brand.
     if (!fromAddresses.length || fromAddresses.every((email) => ownAddresses.has(email))) continue;
 
-    if (isBounceMessage(message)) {
+    if (isBounce(message.header)) {
       if (!bounce) bounce = { type: 'BOUNCE', ...base };
       continue;
     }
-    if (isAutomatedResponse(message)) {
+    if (isAutomated(message.header)) {
       if (!autoReply) autoReply = { type: 'AUTO_REPLY', ...base };
       continue;
     }
 
-    const topText = getTopUnquotedText(extractPlainText(message));
+    const topText = getTopUnquotedText(message.plainText());
     if (containsStrongOptOut(topText)) {
       if (!optOut) optOut = { type: 'OPT_OUT', ...base };
       continue;
@@ -300,7 +356,6 @@ export async function detectThreadResponse(
     if (!humanReply) humanReply = { type: 'REPLY', ...base };
   }
 
-  if (!foundInitial) throw new Error('Initial Message ID is not present in its resolved Gmail thread.');
   return optOut || humanReply || manualOutbound || bounce || autoReply || null;
 }
 

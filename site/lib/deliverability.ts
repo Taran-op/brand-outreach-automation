@@ -1,22 +1,26 @@
 /**
- * Checks that replies can actually reach the mailbox this console reads.
+ * Checks that replies can actually be read by this console.
  *
- * Sending and receiving are separate paths here. Gmail sends as
+ * Sending and receiving are separate paths. Gmail sends as
  * taran@asaiverse.com through a Send-As alias, but a reply follows the
- * domain's MX record — and if that points somewhere other than Google, the
- * reply lands in a mailbox the Gmail API cannot see. Reply detection then
- * reports "no replies" indefinitely while opt-outs go unnoticed and follow-ups
- * keep going out. Nothing errors, which is what makes it worth checking for.
+ * domain's MX record to Hostinger, where Gmail cannot see it. The console
+ * therefore reads that mailbox over IMAP — and this check confirms it is
+ * configured and has been proven to work, because a silent failure here means
+ * opt-outs go unnoticed while follow-ups keep going out.
  */
 
 import { CONFIG } from './config';
+import { describeMailbox, mailboxConfigured } from './hostinger';
 import { normalizeEmail, safeDisplayText } from './text';
 
 type MxAnswer = { data?: string };
 
 const GOOGLE_MX = /(^|\.)(google\.com|googlemail\.com|aspmx\.l\.google\.com)\.?$/i;
 
-let cached: { checkedAt: number; warning: string; verifiedKey: string } | null = null;
+/** A loopback proof older than this is stale — passwords change, mailboxes move. */
+const VERIFICATION_VALID_DAYS = 14;
+
+let mxCache: { checkedAt: number; deliveredElsewhere: boolean; host: string } | null = null;
 const CACHE_MS = 10 * 60 * 1000;
 
 async function lookupMx(domain: string): Promise<string[]> {
@@ -33,49 +37,50 @@ async function lookupMx(domain: string): Promise<string[]> {
     .filter(Boolean);
 }
 
-/** A loopback proof older than this is treated as stale — forwarding rules get removed. */
-const VERIFICATION_VALID_DAYS = 14;
+/** Where a reply to the reply-to address is actually delivered. */
+async function replyDelivery(): Promise<{ deliveredElsewhere: boolean; host: string }> {
+  if (mxCache && Date.now() - mxCache.checkedAt < CACHE_MS) return mxCache;
 
-/**
- * Returns a warning when replies would land outside Gmail, or '' when the
- * routing is fine or undeterminable. Never throws — a DNS hiccup must not
- * take the dashboard down.
- *
- * DNS can only say where mail is delivered, not whether that mailbox forwards
- * on. So when the MX points away from Google, the verdict comes from the last
- * successful loopback test instead: a recent proof clears the warning, no
- * proof or a stale one raises it and says how to clear it.
- */
-export async function replyRoutingWarning(verifiedAt: Date | null): Promise<string> {
-  if (cached && Date.now() - cached.checkedAt < CACHE_MS && cached.verifiedKey === String(verifiedAt)) {
-    return cached.warning;
-  }
-
-  let warning = '';
+  let deliveredElsewhere = false;
+  let host = '';
   try {
-    const replyTo = normalizeEmail(CONFIG.SENDER.REPLY_TO_EMAIL);
-    const domain = replyTo.split('@')[1];
+    const domain = normalizeEmail(CONFIG.SENDER.REPLY_TO_EMAIL).split('@')[1];
     if (domain) {
       const hosts = await lookupMx(domain);
-      const deliveredElsewhere = hosts.length && !hosts.some((host) => GOOGLE_MX.test(host));
-
-      if (deliveredElsewhere) {
-        const ageDays = verifiedAt ? (Date.now() - verifiedAt.getTime()) / 86_400_000 : Infinity;
-        if (ageDays > VERIFICATION_VALID_DAYS) {
-          const host = hosts[0].replace(/\.$/, '');
-          warning = verifiedAt
-            ? `Reply routing was last proven ${Math.floor(ageDays)} days ago. Replies to ${replyTo} are delivered to ${host}; ` +
-              'run "Verify reply routing" to confirm forwarding into Gmail still works.'
-            : `Replies to ${replyTo} are delivered to ${host}, not Gmail, so reply detection cannot see them unless that mailbox forwards into Gmail. ` +
-              'Set up forwarding, then run "Verify reply routing" to prove it and clear this. ' +
-              'Until then, opt-outs will go unnoticed and follow-ups will keep sending to brands that have already replied.';
-        }
-      }
+      deliveredElsewhere = hosts.length > 0 && !hosts.some((entry) => GOOGLE_MX.test(entry));
+      host = (hosts[0] || '').replace(/\.$/, '');
     }
   } catch {
     // An unreachable resolver is not evidence of a problem.
   }
 
-  cached = { checkedAt: Date.now(), warning, verifiedKey: String(verifiedAt) };
-  return warning;
+  mxCache = { checkedAt: Date.now(), deliveredElsewhere, host };
+  return mxCache;
+}
+
+/**
+ * Returns a warning when the console could not see a reply, or '' when it
+ * can. Never throws — the dashboard must render regardless.
+ */
+export async function replyRoutingWarning(verifiedAt: Date | null): Promise<string> {
+  const replyTo = normalizeEmail(CONFIG.SENDER.REPLY_TO_EMAIL);
+  const { deliveredElsewhere, host } = await replyDelivery();
+
+  // Replies land in Gmail itself; the thread scan sees them without help.
+  if (!deliveredElsewhere) return '';
+
+  if (!mailboxConfigured()) {
+    return (
+      `Replies to ${replyTo} are delivered to ${host}, which this console is not yet reading. ` +
+      'Set HOSTINGER_IMAP_USER and HOSTINGER_IMAP_PASSWORD in Vercel, redeploy, then run "Verify reply routing". ' +
+      'Until then, opt-outs will go unnoticed and follow-ups will keep sending to brands that have already replied.'
+    );
+  }
+
+  const ageDays = verifiedAt ? (Date.now() - verifiedAt.getTime()) / 86_400_000 : Infinity;
+  if (ageDays <= VERIFICATION_VALID_DAYS) return '';
+
+  return verifiedAt
+    ? `Reading ${describeMailbox()} over IMAP, last proven ${Math.floor(ageDays)} days ago. Run "Verify reply routing" to confirm it still works.`
+    : `Reading ${describeMailbox()} over IMAP, but that has not been proven yet. Run "Verify reply routing" once to confirm replies are visible and clear this.`;
 }
