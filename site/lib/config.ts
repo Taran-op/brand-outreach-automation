@@ -13,6 +13,12 @@ const requiredEnv = (name: string): string => {
   return value;
 };
 
+/** A positive integer from the environment, or the fallback when unset or invalid. */
+const positiveInt = (name: string, fallback: number): number => {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+};
+
 const listEnv = (name: string): string[] =>
   (process.env[name] || '')
     .split(',')
@@ -71,12 +77,20 @@ export const CONFIG = {
     /**
      * Sending is armed by the CONSOLE_SENDS_ENABLED environment variable, not
      * by source, so a deploy alone can never make this console capable of
-     * delivery. These caps then bound what an armed run may do; they mirror
-     * the Apps Script values deliberately.
+     * delivery. The volume caps are environment settings too, so they can be
+     * tuned without a code change, with conservative defaults.
+     *
+     * Two ceilings apply whatever these say. Gmail limits a consumer account
+     * to 500 recipients a day, and every message here has three (To + two
+     * CC), so ~160 messages is the most Gmail will send. And a single run must
+     * finish inside the function's time limit, which at a few seconds per
+     * message bounds the per-run count at around 30.
      */
-    DAILY_SEND_LIMIT: 1,
-    MAX_INITIALS_PER_RUN: 1,
-    MAX_FOLLOW_UPS_PER_RUN: 1,
+    DAILY_SEND_LIMIT: positiveInt('CONSOLE_DAILY_SEND_LIMIT', 1),
+    MAX_INITIALS_PER_RUN: positiveInt('CONSOLE_MAX_INITIALS_PER_RUN', 1),
+    MAX_FOLLOW_UPS_PER_RUN: positiveInt('CONSOLE_MAX_FOLLOW_UPS_PER_RUN', 1),
+    /** Pause between sequential sends; a burst looks like bulk mail to Gmail. */
+    SEND_DELAY_MS: positiveInt('CONSOLE_SEND_DELAY_MS', 2500),
     MAX_REPLY_CHECKS_PER_RUN: 50,
     MAX_LOG_MESSAGE_LENGTH: 500
   }

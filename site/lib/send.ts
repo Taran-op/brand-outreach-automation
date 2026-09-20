@@ -460,6 +460,10 @@ export async function runSendJob(
     if (result.outcome === 'SENT') {
       summary.sent += 1;
       budget -= 1;
+      // Sequential with a pause: a run of back-to-back sends is exactly what
+      // Gmail's abuse detection looks for, and it also keeps the Sheet writes
+      // under the per-minute quota.
+      if (budget > 0) await new Promise((resolve) => setTimeout(resolve, CONFIG.SAFETY.SEND_DELAY_MS));
     } else if (result.outcome === 'RECONCILED') {
       summary.sent += 1;
     } else if (result.outcome === 'ERROR') {
