@@ -195,7 +195,12 @@ function App() {
   const approveSelected = async () => {
     try {
       const result = await run('approve', () => callServer<{approved:string[]; rejected:{id:string;message:string}[]}>('uiBulkApprove', [...selected]));
-      setNotice(`${result?.approved.length || 0} lead(s) approved. ${result?.rejected.length || 0} rejected. No email was sent.`);
+      // A count alone hides the reason, and every refusal has one. Group them
+      // so "49 rejected" reads as "49: a valid single email is required".
+      const reasons = new Map<string, number>();
+      (result?.rejected || []).forEach((entry) => reasons.set(entry.message, (reasons.get(entry.message) || 0) + 1));
+      const why = [...reasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([message, count]) => `${count}: ${message}`).join(' · ');
+      setNotice(`${result?.approved.length || 0} lead(s) approved. ${result?.rejected.length || 0} rejected${why ? ` — ${why}` : ''}. No email was sent.`);
       setSelected(new Set()); await refresh(true);
     } catch { /* surfaced globally */ }
   };
