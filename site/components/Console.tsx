@@ -303,7 +303,10 @@ function App() {
     event.preventDefault();
     try {
       const result = await run('job', () => callServer<JobSummary>('uiRunJob', pendingJob, confirmation));
-      setNotice(`${result?.job || pendingJob}: ${result?.mode}. Processed ${result?.processed || 0}; live sent ${result?.sent || 0}; dry-run candidates ${result?.dryRun || 0}; errors ${result?.errors || 0}.`);
+      // The server's message carries the reason — a daily cap already reached,
+      // no eligible rows, a refused address — and a bare count without it
+      // reads as the job silently doing nothing.
+      setNotice(`${result?.job || pendingJob}: ${result?.mode}. Processed ${result?.processed || 0}; live sent ${result?.sent || 0}; skipped ${result?.skipped || 0}; errors ${result?.errors || 0}.${result?.message ? ` ${result.message}` : ''}`);
       setModal(null); await refresh(true);
     } catch { /* surfaced globally */ }
   };

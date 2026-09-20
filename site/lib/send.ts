@@ -438,6 +438,14 @@ export async function runSendJob(
     return Boolean(dueAction(record, now));
   });
 
+  if (!candidates.length) {
+    summary.message =
+      job === 'INITIALS'
+        ? `No lead is at status APPROVED, so there is nothing to send. Approve leads first. (${alreadySent} of ${CONFIG.SAFETY.DAILY_SEND_LIMIT} sent today.)`
+        : `No follow-up is due today: a lead becomes due ${CONFIG.FOLLOW_UP.FIRST_AFTER_DAYS_FROM_INITIAL} days after its initial send, and again at day ${CONFIG.FOLLOW_UP.SECOND_AFTER_DAYS_FROM_INITIAL}.`;
+    return summary;
+  }
+
   for (const record of candidates) {
     if (budget <= 0) {
       summary.stoppedForLimit = true;
