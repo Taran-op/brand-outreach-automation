@@ -148,7 +148,63 @@ async function searchGoogle(query: string, key: string, cx: string): Promise<Sea
   return body.items || [];
 }
 
+/**
+ * Serper: Google's own results through an API, 2,500 free queries on signup
+ * with no card. The closest thing to "what would Google show" for a query.
+ */
+async function searchSerper(query: string, key: string): Promise<SearchItem[]> {
+  const response = await fetch('https://google.serper.dev/search', {
+    method: 'POST',
+    headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: query, gl: 'in', hl: 'en', num: 10 }),
+    cache: 'no-store'
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    if (response.status === 401 || response.status === 403) {
+      throw new DiscoveryNotConfigured('Serper rejected SERPER_API_KEY. Check the key at serper.dev.');
+    }
+    if (response.status === 429 || /credits/i.test(detail)) {
+      throw new DiscoveryNotConfigured('Serper credits are exhausted. Top up at serper.dev or switch providers.');
+    }
+    throw new Error(`Serper failed (${response.status}): ${safeDisplayText(detail).slice(0, 200)}`);
+  }
+
+  const body = (await response.json()) as { organic?: { title?: string; link?: string; snippet?: string }[] };
+  return body.organic || [];
+}
+
+/** Tavily: 1,000 free queries a month, no card. */
+async function searchTavily(query: string, key: string): Promise<SearchItem[]> {
+  const response = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, max_results: 10, search_depth: 'basic', country: 'india' }),
+    cache: 'no-store'
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    if (response.status === 401 || response.status === 403) {
+      throw new DiscoveryNotConfigured('Tavily rejected TAVILY_API_KEY. Check the key at tavily.com.');
+    }
+    if (response.status === 429 || response.status === 432) {
+      throw new DiscoveryNotConfigured('Tavily monthly credits are exhausted; they reset each month.');
+    }
+    throw new Error(`Tavily failed (${response.status}): ${safeDisplayText(detail).slice(0, 200)}`);
+  }
+
+  const body = (await response.json()) as { results?: { title?: string; url?: string; content?: string }[] };
+  return (body.results || []).map((item) => ({ title: item.title, link: item.url, snippet: item.content }));
+}
+
+/** First configured provider wins. */
 async function searchOnce(query: string): Promise<SearchItem[]> {
+  const serper = process.env.SERPER_API_KEY;
+  if (serper) return searchSerper(query, serper);
+
+  const tavily = process.env.TAVILY_API_KEY;
+  if (tavily) return searchTavily(query, tavily);
+
   const brave = process.env.BRAVE_SEARCH_KEY;
   if (brave) return searchBrave(query, brave);
 
@@ -157,8 +213,8 @@ async function searchOnce(query: string): Promise<SearchItem[]> {
   if (key && cx) return searchGoogle(query, key, cx);
 
   throw new DiscoveryNotConfigured(
-    'Discovery needs a search key. Set BRAVE_SEARCH_KEY (from brave.com/search/api, free tier), ' +
-      'or GOOGLE_CSE_KEY and GOOGLE_CSE_ID for a Programmable Search Engine that can search the whole web.'
+    'Discovery needs a search key. Set SERPER_API_KEY (serper.dev, 2,500 free queries, no card) ' +
+      'or TAVILY_API_KEY (tavily.com, 1,000 free a month, no card). BRAVE_SEARCH_KEY and Google Custom Search also work.'
   );
 }
 
