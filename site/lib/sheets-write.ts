@@ -135,3 +135,43 @@ export const updatedAtCell = (): CellUpdate => ({
   header: LEAD_HEADERS.UPDATED_AT,
   value: new Date().toISOString()
 });
+
+/** Numeric id of the Leads tab, needed for structural (row) operations. */
+async function leadsSheetId(accessToken: string): Promise<number> {
+  const meta = await sheetsRequest<{ sheets?: { properties?: { sheetId?: number; title?: string } }[] }>(
+    '?fields=sheets.properties(sheetId,title)',
+    { method: 'GET' },
+    accessToken
+  );
+  const match = (meta.sheets || []).find((sheet) => sheet.properties?.title === CONFIG.SHEETS.LEADS_NAME);
+  if (match?.properties?.sheetId === undefined) {
+    throw new SheetsError(`The "${CONFIG.SHEETS.LEADS_NAME}" tab could not be found for deletion.`, 409);
+  }
+  return match.properties.sheetId;
+}
+
+/**
+ * Removes whole rows. Deletions are issued highest row first so that each
+ * earlier index in the same batch is still valid when its turn comes.
+ */
+export async function deleteLeadRows(accessToken: string, rowNumbers: number[]): Promise<number> {
+  const rows = [...new Set(rowNumbers.filter((n) => Number.isInteger(n) && n >= 2))].sort((a, b) => b - a);
+  if (!rows.length) return 0;
+
+  const sheetId = await leadsSheetId(accessToken);
+  await sheetsRequest(
+    ':batchUpdate',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        requests: rows.map((row) => ({
+          deleteDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex: row - 1, endIndex: row }
+          }
+        }))
+      })
+    },
+    accessToken
+  );
+  return rows.length;
+}

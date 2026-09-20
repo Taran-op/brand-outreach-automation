@@ -55,7 +55,8 @@ const SERVER_ROUTES: Record<string, Route> = {
   uiSendTest: { path: '/api/console/test-send', method: 'POST' },
   uiRunPipeline: { path: '/api/console/pipeline', method: 'POST' },
   uiDiscoverBrands: { path: '/api/console/discover', method: 'POST' },
-  uiVerifyRouting: { path: '/api/console/verify-routing', method: 'POST' }
+  uiVerifyRouting: { path: '/api/console/verify-routing', method: 'POST' },
+  uiDeleteLeads: { path: '/api/console/delete', method: 'POST' }
 };
 
 /**
@@ -189,6 +190,22 @@ function App() {
     try {
       const value = await run('preview', () => callServer<Preview>('uiPreviewLead', lead.id));
       setPreview(value || null);
+    } catch { /* surfaced globally */ }
+  };
+
+  const deleteSelected = async () => {
+    const count = selected.size;
+    if (!count) return;
+    if (!window.confirm(`Delete ${count} lead(s) from the Sheet? Leads that were emailed or opted out are kept automatically.`)) return;
+    try {
+      const result = await run('delete', () => callServer<{deleted:string[]; refused:{id:string;message:string}[]}>('uiDeleteLeads', [...selected]));
+      // Refusals are deliberate and each has a reason; show them grouped
+      // rather than as a bare count.
+      const reasons = new Map<string, number>();
+      (result?.refused || []).forEach((entry) => reasons.set(entry.message, (reasons.get(entry.message) || 0) + 1));
+      const why = [...reasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([message, n]) => `${n}: ${message}`).join(' · ');
+      setNotice(`${result?.deleted.length || 0} lead(s) deleted. ${result?.refused.length || 0} kept${why ? ` — ${why}` : ''}.`);
+      setSelected(new Set()); setDrawerLead(null); await refresh(true);
     } catch { /* surfaced globally */ }
   };
 
@@ -355,7 +372,7 @@ function App() {
 
       <section className="workspace-grid">
         <div id="leads" className="panel leads-panel">
-          <div className="panel-head"><div><span className="eyebrow">APPROVAL QUEUE</span><h2>Lead control</h2></div><div className="head-actions"><button className="secondary" onClick={() => setModal('import')}><Icon name="upload"/>Drop XLSX</button><button className="primary" disabled={!selected.size || !!busy} onClick={approveSelected}><Icon name="check"/>Approve {selected.size || ''}</button></div></div>
+          <div className="panel-head"><div><span className="eyebrow">APPROVAL QUEUE</span><h2>Lead control</h2></div><div className="head-actions"><button className="secondary" onClick={() => setModal('import')}><Icon name="upload"/>Drop XLSX</button><button className="danger-button" disabled={!selected.size || !!busy} onClick={deleteSelected}><Icon name="close"/>Delete {selected.size || ''}</button><button className="primary" disabled={!selected.size || !!busy} onClick={approveSelected}><Icon name="check"/>Approve {selected.size || ''}</button></div></div>
           <div className="filters"><label className="search"><Icon name="search"/><input aria-label="Search leads" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search company, email, category…"/></label><select aria-label="Filter by status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="ALL">All statuses</option>{data?.statuses.map((status) => <option key={status}>{status}</option>)}</select><span>{leads.length} shown</span></div>
           <div className="table-wrap"><table><thead><tr><th className="check-cell"><input aria-label="Select all visible" type="checkbox" checked={!!leads.length && leads.every((l) => selected.has(l.id))} onChange={(e) => { const next = new Set(selected); leads.forEach((l) => e.target.checked ? next.add(l.id) : next.delete(l.id)); setSelected(next); }}/></th><th>Company</th><th>Contact</th><th>Category</th><th>Status</th><th>Last activity</th><th aria-label="Actions"/></tr></thead><tbody>
             {leads.map((lead) => <tr key={lead.id} className={selected.has(lead.id) ? 'selected-row' : ''}><td className="check-cell"><input aria-label={`Select ${lead.company || lead.email}`} type="checkbox" checked={selected.has(lead.id)} onChange={(e) => { const next = new Set(selected); e.target.checked ? next.add(lead.id) : next.delete(lead.id); setSelected(next); }}/></td><td><button className="company-link" onClick={() => setDrawerLead(lead)}>{lead.company || <em>Company needed</em>}</button><small>{lead.email}</small></td><td>{lead.contactName || 'Team'}</td><td>{lead.category || 'Uncategorised'}</td><td><span className={`status ${statusTone(lead.status)}`}>{lead.status.replaceAll('_',' ')}</span>{lead.dueAction && <small className="due">{lead.dueAction.replaceAll('_',' ')} due</small>}</td><td>{formatDate(lead.updatedAt || lead.initialSentAt)}</td><td className="row-actions"><button title="Preview email" onClick={() => openPreview(lead)}><Icon name="mail"/></button><button title="Edit lead" onClick={() => setDrawerLead(lead)}><Icon name="edit"/></button></td></tr>)}
