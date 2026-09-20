@@ -19,7 +19,7 @@ import {
 import { GmailError } from './gmail';
 import { findRepliesInMailbox, mailboxConfigured, type InboundMessage } from './hostinger';
 import { getLeadRows, leadValue, type LeadRecord } from './sheets';
-import { appendLogRow, updateLeadCells, type CellUpdate } from './sheets-write';
+import { appendLogRows, updateManyLeadCells, type CellUpdate, type LogInput, type RowUpdate } from './sheets-write';
 import { hasPendingAction, normalizeStatus } from './templates';
 import { isTrue, normalizeEmail, safeDisplayText } from './text';
 
@@ -386,11 +386,14 @@ export function shouldCheckReplies(record: LeadRecord): boolean {
   ].includes(status as never);
 }
 
-export async function applyDetectedResponse(
-  accessToken: string,
-  record: LeadRecord,
-  response: DetectedResponse
-): Promise<string> {
+export type PlannedResponse = { action: string; write: RowUpdate; log: LogInput };
+
+/**
+ * Decides what a detected response means for the row. Returns the write and
+ * the audit line rather than performing them, so a scan over many rows can
+ * commit everything in one request instead of one per row.
+ */
+export function planDetectedResponse(record: LeadRecord, response: DetectedResponse): PlannedResponse {
   const now = new Date();
   const currentStatus = normalizeStatus(leadValue(record, LEAD_HEADERS.STATUS));
   const alreadyStopped = isTrue(leadValue(record, LEAD_HEADERS.OPT_OUT));
@@ -459,16 +462,17 @@ export async function applyDetectedResponse(
   updates.push({ header: LEAD_HEADERS.STATUS, value: status });
   if (lastError) updates.push({ header: LEAD_HEADERS.LAST_ERROR, value: lastError });
 
-  await updateLeadCells(accessToken, record, updates);
-  await appendLogRow(accessToken, {
-    company: safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY)),
-    email: normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)),
+  return {
     action,
-    result: 'DETECTED',
-    message: logMessage
-  });
-
-  return action;
+    write: { record, updates },
+    log: {
+      company: safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY)),
+      email: normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)),
+      action,
+      result: 'DETECTED',
+      message: logMessage
+    }
+  };
 }
 
 /** Addresses that are us, so a reply-all from a colleague is not a brand reply. */
@@ -509,23 +513,26 @@ export async function runReplyScan(accessToken: string, maxRows: number): Promis
     .slice(0, maxRows);
 
   const summary: ReplyScanSummary = { processed: 0, replies: 0, optOuts: 0, errors: 0, message: '' };
+  const writes: RowUpdate[] = [];
+  const logs: LogInput[] = [];
+  const checkedAt = new Date().toISOString();
 
   for (const record of candidates) {
     summary.processed += 1;
     try {
       const response = await detectThreadResponse(accessToken, record, ownAddresses);
       if (!response) {
-        await updateLeadCells(accessToken, record, [
-          { header: LEAD_HEADERS.LAST_REPLY_CHECK_AT, value: new Date().toISOString() }
-        ]);
+        writes.push({ record, updates: [{ header: LEAD_HEADERS.LAST_REPLY_CHECK_AT, value: checkedAt }] });
         continue;
       }
-      const action = await applyDetectedResponse(accessToken, record, response);
-      if (action === 'OPT_OUT') summary.optOuts += 1;
+      const planned = planDetectedResponse(record, response);
+      writes.push(planned.write);
+      logs.push(planned.log);
+      if (planned.action === 'OPT_OUT') summary.optOuts += 1;
       else summary.replies += 1;
     } catch (error) {
       summary.errors += 1;
-      await appendLogRow(accessToken, {
+      logs.push({
         company: safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY)),
         email: normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)),
         action: 'REPLY_CHECK',
@@ -534,6 +541,10 @@ export async function runReplyScan(accessToken: string, maxRows: number): Promis
       });
     }
   }
+
+  // One write and one log append for the whole scan.
+  await updateManyLeadCells(accessToken, writes);
+  await appendLogRows(accessToken, logs);
 
   summary.message =
     `${summary.processed} thread(s) checked, ${summary.replies} reply/replies recorded, ` +

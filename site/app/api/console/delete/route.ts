@@ -2,7 +2,7 @@ import { findLeadById, hasInitialSuccessEvidence, validateLeadId } from '@/lib/a
 import { LEAD_HEADERS, STATUS } from '@/lib/constants';
 import { readArgs } from '@/lib/request';
 import { getLeadRows, leadValue } from '@/lib/sheets';
-import { appendLogRow, deleteLeadRows } from '@/lib/sheets-write';
+import { appendLogRows, deleteLeadRows, type LogInput } from '@/lib/sheets-write';
 import { errorResponse, requireOperator } from '@/lib/session';
 import { hasPendingAction, normalizeStatus } from '@/lib/templates';
 import { isTrue, normalizeEmail, safeDisplayText } from '@/lib/text';
@@ -31,6 +31,7 @@ export async function POST(request: Request) {
     const rowsToDelete: number[] = [];
     const deleted: string[] = [];
     const refused: { id: string; message: string }[] = [];
+    const logs: LogInput[] = [];
 
     for (const rawId of rawIds) {
       let id = '';
@@ -52,7 +53,7 @@ export async function POST(request: Request) {
 
         rowsToDelete.push(record.rowNumber);
         deleted.push(id);
-        await appendLogRow(operator.accessToken, {
+        logs.push({
           company: safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY)),
           email: normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)),
           action: 'DELETE',
@@ -64,6 +65,7 @@ export async function POST(request: Request) {
       }
     }
 
+    await appendLogRows(operator.accessToken, logs);
     await deleteLeadRows(operator.accessToken, rowsToDelete);
     return Response.json({ deleted, refused });
   } catch (error) {

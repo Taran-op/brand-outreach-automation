@@ -14,7 +14,7 @@ import { discoverBrands } from './discover';
 import { enrichCompany } from './enrich';
 import { newLeadId } from './request';
 import { getLeadRows, getLeadsTable, leadValue, type LeadRecord } from './sheets';
-import { appendLeadRows, appendLogRow, updateLeadCells, type CellUpdate } from './sheets-write';
+import { appendLeadRows, appendLogRow, updateManyLeadCells, type CellUpdate, type RowUpdate } from './sheets-write';
 import { normalizeStatus } from './templates';
 import {
   isValidSingleEmail,
@@ -95,6 +95,7 @@ export async function runResearch(accessToken: string, maxRows: number): Promise
   const candidates = records.filter(needsResearch).slice(0, maxRows);
   let found = 0;
   let failureExample = '';
+  const writes: RowUpdate[] = [];
 
   for (const record of candidates) {
     const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
@@ -120,8 +121,9 @@ export async function runResearch(accessToken: string, maxRows: number): Promise
       header: LEAD_HEADERS.NOTES,
       value: sanitizeUiMultilineText(notes.filter(Boolean).join('\n'), 2000)
     });
-    await updateLeadCells(accessToken, record, updates);
+    writes.push({ record, updates });
   }
+  await updateManyLeadCells(accessToken, writes);
 
   if (candidates.length) {
     await appendLogRow(accessToken, {
@@ -146,6 +148,8 @@ export async function runAutoApprove(accessToken: string): Promise<ApproveSummar
   const emailCounts = buildEmailCounts(records);
   let approved = 0;
   const refusals: string[] = [];
+  const writes: RowUpdate[] = [];
+  const stamp = new Date().toISOString();
 
   for (const record of records) {
     if (normalizeStatus(leadValue(record, LEAD_HEADERS.STATUS)) !== STATUS.NEW) continue;
@@ -161,14 +165,18 @@ export async function runAutoApprove(accessToken: string): Promise<ApproveSummar
       continue;
     }
 
-    await updateLeadCells(accessToken, record, [
-      { header: LEAD_HEADERS.STATUS, value: STATUS.APPROVED },
-      { header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() }
-    ]);
+    writes.push({
+      record,
+      updates: [
+        { header: LEAD_HEADERS.STATUS, value: STATUS.APPROVED },
+        { header: LEAD_HEADERS.UPDATED_AT, value: stamp }
+      ]
+    });
     if (statusColumn) record.values[statusColumn - 1] = STATUS.APPROVED;
     safetyIndex = buildInitialSafetyIndex(records, safetyIndex);
     approved += 1;
   }
+  await updateManyLeadCells(accessToken, writes);
 
   if (approved) {
     await appendLogRow(accessToken, {
