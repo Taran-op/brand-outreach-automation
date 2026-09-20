@@ -3,7 +3,7 @@ import { CATEGORY_VALUES, STATUS_VALUES } from '@/lib/constants';
 import { summarize, toLead } from '@/lib/leads';
 import { getLeadRows, getLogEntries } from '@/lib/sheets';
 import { replyRoutingWarning } from '@/lib/deliverability';
-import { isSystemDisabled } from '@/lib/killswitch';
+import { getRoutingVerifiedAt, isSystemDisabled } from '@/lib/killswitch';
 import { campaignWindowOpen, countSentToday, sendsArmed } from '@/lib/send';
 import { errorResponse, requireOperator } from '@/lib/session';
 
@@ -26,7 +26,7 @@ export async function GET() {
     const armed = sendsArmed() && campaignWindowOpen(now) && !disabled;
     const sentToday = countSentToday(records, now);
     const ownsMailbox = isMailboxOwner(operator.email);
-    const routingWarning = await replyRoutingWarning();
+    const routingWarning = await replyRoutingWarning(await getRoutingVerifiedAt(operator.accessToken));
 
     return Response.json({
       generatedAt: now.toISOString(),

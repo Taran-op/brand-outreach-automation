@@ -91,3 +91,40 @@ export async function setSystemDisabled(accessToken: string, disabled: boolean):
     accessToken
   );
 }
+
+/**
+ * Second row of the control tab: when reply routing was last proven to work
+ * end to end. An MX record alone cannot show that a Hostinger mailbox forwards
+ * into Gmail, so this is written only by a successful loopback test.
+ */
+const ROUTING_LABEL_CELL = 'A2';
+const ROUTING_VALUE_CELL = 'B2';
+
+export async function getRoutingVerifiedAt(accessToken: string): Promise<Date | null> {
+  try {
+    const body = await api<{ values?: unknown[][] }>(
+      `/values/${encodeURIComponent(`'${CONTROL_SHEET}'!${ROUTING_VALUE_CELL}`)}`,
+      { method: 'GET' },
+      accessToken
+    );
+    const raw = safeDisplayText(body.values?.[0]?.[0]);
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  } catch (error) {
+    if (error instanceof SheetsError && error.status === 400) return null;
+    throw error;
+  }
+}
+
+export async function setRoutingVerifiedAt(accessToken: string, when: Date): Promise<void> {
+  await ensureControlSheet(accessToken);
+  await api(
+    `/values/${encodeURIComponent(`'${CONTROL_SHEET}'!${ROUTING_LABEL_CELL}:${ROUTING_VALUE_CELL}`)}?valueInputOption=RAW`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ values: [['Reply routing last verified', when.toISOString()]] })
+    },
+    accessToken
+  );
+}

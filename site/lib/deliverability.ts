@@ -16,7 +16,7 @@ type MxAnswer = { data?: string };
 
 const GOOGLE_MX = /(^|\.)(google\.com|googlemail\.com|aspmx\.l\.google\.com)\.?$/i;
 
-let cached: { checkedAt: number; warning: string } | null = null;
+let cached: { checkedAt: number; warning: string; verifiedKey: string } | null = null;
 const CACHE_MS = 10 * 60 * 1000;
 
 async function lookupMx(domain: string): Promise<string[]> {
@@ -33,13 +33,23 @@ async function lookupMx(domain: string): Promise<string[]> {
     .filter(Boolean);
 }
 
+/** A loopback proof older than this is treated as stale — forwarding rules get removed. */
+const VERIFICATION_VALID_DAYS = 14;
+
 /**
  * Returns a warning when replies would land outside Gmail, or '' when the
  * routing is fine or undeterminable. Never throws — a DNS hiccup must not
  * take the dashboard down.
+ *
+ * DNS can only say where mail is delivered, not whether that mailbox forwards
+ * on. So when the MX points away from Google, the verdict comes from the last
+ * successful loopback test instead: a recent proof clears the warning, no
+ * proof or a stale one raises it and says how to clear it.
  */
-export async function replyRoutingWarning(): Promise<string> {
-  if (cached && Date.now() - cached.checkedAt < CACHE_MS) return cached.warning;
+export async function replyRoutingWarning(verifiedAt: Date | null): Promise<string> {
+  if (cached && Date.now() - cached.checkedAt < CACHE_MS && cached.verifiedKey === String(verifiedAt)) {
+    return cached.warning;
+  }
 
   let warning = '';
   try {
@@ -47,17 +57,25 @@ export async function replyRoutingWarning(): Promise<string> {
     const domain = replyTo.split('@')[1];
     if (domain) {
       const hosts = await lookupMx(domain);
-      if (hosts.length && !hosts.some((host) => GOOGLE_MX.test(host))) {
-        warning =
-          `Replies to ${replyTo} are delivered to ${hosts[0].replace(/\.$/, '')}, not Gmail, ` +
-          'so reply detection cannot see them unless that mailbox forwards into Gmail. ' +
-          'Until it does, opt-outs will go unnoticed and follow-ups will keep sending to brands that have already replied.';
+      const deliveredElsewhere = hosts.length && !hosts.some((host) => GOOGLE_MX.test(host));
+
+      if (deliveredElsewhere) {
+        const ageDays = verifiedAt ? (Date.now() - verifiedAt.getTime()) / 86_400_000 : Infinity;
+        if (ageDays > VERIFICATION_VALID_DAYS) {
+          const host = hosts[0].replace(/\.$/, '');
+          warning = verifiedAt
+            ? `Reply routing was last proven ${Math.floor(ageDays)} days ago. Replies to ${replyTo} are delivered to ${host}; ` +
+              'run "Verify reply routing" to confirm forwarding into Gmail still works.'
+            : `Replies to ${replyTo} are delivered to ${host}, not Gmail, so reply detection cannot see them unless that mailbox forwards into Gmail. ` +
+              'Set up forwarding, then run "Verify reply routing" to prove it and clear this. ' +
+              'Until then, opt-outs will go unnoticed and follow-ups will keep sending to brands that have already replied.';
+        }
       }
     }
   } catch {
     // An unreachable resolver is not evidence of a problem.
   }
 
-  cached = { checkedAt: Date.now(), warning };
+  cached = { checkedAt: Date.now(), warning, verifiedKey: String(verifiedAt) };
   return warning;
 }
