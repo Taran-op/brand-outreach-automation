@@ -58,12 +58,16 @@ const campaignDate = (value: Date): string =>
   }).format(value);
 
 /**
- * Today's send count, derived from the Sheet rather than a stored counter.
- * Derived state cannot drift from what actually happened, and it survives a
- * console that keeps no state of its own.
+ * Sends in the last 24 hours, derived from the Sheet rather than a stored
+ * counter. Derived state cannot drift from what actually happened, and it
+ * survives a console that keeps no state of its own.
+ *
+ * A rolling window, not a calendar day, because that is how the relay
+ * (Hostinger) counts: a calendar-day counter resets at midnight and would
+ * happily send a fresh batch into a 24-hour quota that is still full.
  */
 export function countSentToday(records: LeadRecord[], now: Date): number {
-  const today = campaignDate(now);
+  const since = now.getTime() - 24 * 60 * 60 * 1000;
   const stamps = [
     LEAD_HEADERS.INITIAL_SENT_AT,
     LEAD_HEADERS.FOLLOW_UP_1_SENT_AT,
@@ -76,8 +80,8 @@ export function countSentToday(records: LeadRecord[], now: Date): number {
       stamps.filter((header) => {
         const raw = text(record, header);
         if (!raw) return false;
-        const parsed = new Date(raw);
-        return !Number.isNaN(parsed.getTime()) && campaignDate(parsed) === today;
+        const parsed = new Date(raw).getTime();
+        return !Number.isNaN(parsed) && parsed >= since && parsed <= now.getTime();
       }).length
     );
   }, 0);
