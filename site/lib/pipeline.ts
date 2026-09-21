@@ -101,17 +101,23 @@ const RESEARCH_ROW_CAP_MS = 20_000;
 const RESEARCH_CONCURRENCY = 8;
 /** A row researched without result is left alone this long before a retry. */
 const RESEARCH_RETRY_DAYS = 14;
+/**
+ * Bumped whenever the crawler learns a new way to find an address, so rows
+ * that an older version gave up on are queued again instead of resting.
+ */
+const RESEARCH_VERSION = 2;
 
 /**
  * Research stamps the Notes cell when it finds nothing, so the queue shrinks
  * instead of re-crawling the same dead ends on every press. The stamp leads
  * the cell and is replaced, not accumulated, on a retry.
  */
-const RESEARCH_STAMP = /^\[auto-research (\d{4}-\d{2}-\d{2})[^\]]*\]\s*/;
+const RESEARCH_STAMP = /^\[auto-research (\d{4}-\d{2}-\d{2})(?: v(\d+))?[^\]]*\]\s*/;
 
 export const researchedRecently = (record: LeadRecord, now = Date.now()): boolean => {
   const match = RESEARCH_STAMP.exec(safeDisplayText(leadValue(record, LEAD_HEADERS.NOTES)));
   if (!match) return false;
+  if (Number(match[2] || 0) !== RESEARCH_VERSION) return false;
   const at = Date.parse(match[1]);
   return Number.isFinite(at) && now - at < RESEARCH_RETRY_DAYS * 86_400_000;
 };
@@ -121,11 +127,14 @@ const operatorNotes = (record: LeadRecord): string =>
   safeDisplayText(leadValue(record, LEAD_HEADERS.NOTES))
     .replace(RESEARCH_STAMP, '')
     .replace(/\s*Site description:.*$/, '')
-    .replace(/\s*Address found automatically via .*?— verify before approving\./, '')
+    .replace(
+      /\s*(?:Address found automatically|Named contact found automatically|Only a customer-support inbox is published) .*?before approving\./,
+      ''
+    )
     .trim();
 
 const stampText = (stamp: string, reason: string) =>
-  `[auto-research ${stamp}: ${safeDisplayText(reason).replace(/[\[\]]/g, ' ').trim()}]`;
+  `[auto-research ${stamp} v${RESEARCH_VERSION}: ${safeDisplayText(reason).replace(/[\[\]]/g, ' ').trim()}]`;
 
 const withTimeout = <T,>(work: Promise<T>, ms: number): Promise<T> =>
   new Promise<T>((resolve, reject) => {
@@ -172,11 +181,13 @@ export async function runResearch(
 
     let email = result.email;
     let source = result.sourceUrl;
+    let quality = result.emailQuality;
     if (!email) {
       const searched = await searchForEmail(company, String(website || ''));
       if (searched.email) {
         email = searched.email;
         source = searched.source;
+        quality = searched.quality;
       }
     }
 
@@ -186,7 +197,13 @@ export async function runResearch(
     if (email) {
       updates.push({ header: LEAD_HEADERS.EMAIL, value: email });
       updates.push({ header: LEAD_HEADERS.NORMALIZED_EMAIL, value: email });
-      notes.push(`Address found automatically via ${source} — verify before approving.`);
+      notes.push(
+        quality === 'support'
+          ? `Only a customer-support inbox is published (${email}, via ${source}) — they may forward it, but a marketing contact would do better; verify before approving.`
+          : quality === 'person'
+            ? `Named contact found automatically via ${source} — check it is the right person before approving.`
+            : `Address found automatically via ${source} — verify before approving.`
+      );
     } else {
       notes.push(stampText(stamp, result.diagnosis || 'No published contact address found on the site or in search.'));
     }
