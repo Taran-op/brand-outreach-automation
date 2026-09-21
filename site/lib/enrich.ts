@@ -12,11 +12,11 @@ import { CATEGORY_VALUES } from './constants';
 import { canonicalizeImportedCategory, normalizeImportWebsite } from './import';
 import { isValidSingleEmail, normalizeEmail, safeDisplayText, truncate } from './text';
 
-const FETCH_TIMEOUT_MS = 8000;
+const FETCH_TIMEOUT_MS = 5000;
 const MAX_BYTES = 600_000;
 
 /** Pages a company usually publishes partnership contacts on. */
-const CANDIDATE_PATHS = ['', '/contact', '/contact-us', '/about', '/about-us', '/partnerships', '/press'];
+const CANDIDATE_PATHS = ['', '/contact', '/contact-us', '/about'];
 
 /**
  * Local-parts we actively want, best first. A partnerships address is a public
@@ -290,9 +290,15 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
   let pagesFetched = 0;
 
   outer: for (const origin of origins) {
-    for (const path of CANDIDATE_PATHS) {
-      const url = `${origin}${path}`;
-      const html = await fetchPage(url);
+    // The pages are fetched together: four small requests in the time of
+    // one keep a slow site inside research's per-row cap.
+    const pages = await Promise.all(
+      CANDIDATE_PATHS.map(async (path) => {
+        const url = `${origin}${path}`;
+        return { url, html: await fetchPage(url) };
+      })
+    );
+    for (const { url, html } of pages) {
       pagesTried += 1;
       if (!html) continue;
       pagesFetched += 1;
@@ -362,7 +368,8 @@ export async function searchForEmail(companyName: string, website: string): Prom
       method: 'POST',
       headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
       body: JSON.stringify({ q: query, gl: 'in', hl: 'en', num: 10 }),
-      cache: 'no-store'
+      cache: 'no-store',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
     });
     if (!response.ok) return { email: '', source: '' };
     organic = ((await response.json()) as { organic?: typeof organic }).organic || [];

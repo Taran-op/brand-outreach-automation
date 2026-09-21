@@ -90,27 +90,82 @@ const needsResearch = (record: LeadRecord): boolean =>
 
 export type ResearchSummary = { researched: number; found: number; remaining: number; failureExample: string };
 
-/** Stop starting new rows past this so the function returns before its limit. */
-const RESEARCH_TIME_BUDGET_MS = 230_000;
-const RESEARCH_CONCURRENCY = 5;
+/**
+ * One burst of research. The function limit is 300 s, so a burst stops
+ * taking new rows well inside it and leaves the rest queued: the console
+ * presses again while the summary reports rows remaining.
+ */
+const RESEARCH_TIME_BUDGET_MS = 45_000;
+/** A slow site is abandoned rather than allowed to hold a worker. */
+const RESEARCH_ROW_CAP_MS = 20_000;
+const RESEARCH_CONCURRENCY = 8;
+/** A row researched without result is left alone this long before a retry. */
+const RESEARCH_RETRY_DAYS = 14;
+
+/**
+ * Research stamps the Notes cell when it finds nothing, so the queue shrinks
+ * instead of re-crawling the same dead ends on every press. The stamp leads
+ * the cell and is replaced, not accumulated, on a retry.
+ */
+const RESEARCH_STAMP = /^\[auto-research (\d{4}-\d{2}-\d{2})[^\]]*\]\s*/;
+
+export const researchedRecently = (record: LeadRecord, now = Date.now()): boolean => {
+  const match = RESEARCH_STAMP.exec(safeDisplayText(leadValue(record, LEAD_HEADERS.NOTES)));
+  if (!match) return false;
+  const at = Date.parse(match[1]);
+  return Number.isFinite(at) && now - at < RESEARCH_RETRY_DAYS * 86_400_000;
+};
+
+/** The operator's own notes, without anything an earlier research pass appended. */
+const operatorNotes = (record: LeadRecord): string =>
+  safeDisplayText(leadValue(record, LEAD_HEADERS.NOTES))
+    .replace(RESEARCH_STAMP, '')
+    .replace(/\s*Site description:.*$/, '')
+    .replace(/\s*Address found automatically via .*?— verify before approving\./, '')
+    .trim();
+
+const stampText = (stamp: string, reason: string) =>
+  `[auto-research ${stamp}: ${safeDisplayText(reason).replace(/[\[\]]/g, ' ').trim()}]`;
+
+const withTimeout = <T,>(work: Promise<T>, ms: number): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 
 /**
  * Finds addresses for rows that lack one. Two sources per company: its own
  * site first, then a web search for addresses on its domain when the site
  * publishes none. Rows are worked several at a time inside a fixed time
- * budget, so a click clears as many as the function can, and the summary
- * says how many are still waiting.
+ * budget, so a call clears as many as it safely can, and the summary says
+ * how many are still waiting.
  */
-export async function runResearch(accessToken: string, maxRows: number): Promise<ResearchSummary> {
-  const records = await getLeadRows(accessToken);
-  const pending = records.filter(needsResearch);
-  const queue = pending.slice(0, maxRows);
+export async function runResearch(
+  accessToken: string,
+  maxRows: number,
+  options: { deadline?: number } = {}
+): Promise<ResearchSummary> {
   const started = Date.now();
+  const deadline = Math.min(options.deadline ?? Infinity, started + RESEARCH_TIME_BUDGET_MS);
+  const stamp = new Date(started).toISOString().slice(0, 10);
+
+  const records = await getLeadRows(accessToken);
+  const pending = records.filter((record) => needsResearch(record) && !researchedRecently(record, started));
+  const queue = pending.slice(0, maxRows);
   let found = 0;
   let failureExample = '';
   const writes: RowUpdate[] = [];
 
-  const researchOne = async (record: LeadRecord) => {
+  const researchOne = async (record: LeadRecord): Promise<{ write: RowUpdate; found: boolean; diagnosis: string }> => {
     const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
     const website = leadValue(record, LEAD_HEADERS.WEBSITE);
     const result = await enrichCompany(website, company);
@@ -126,17 +181,16 @@ export async function runResearch(accessToken: string, maxRows: number): Promise
     }
 
     const updates: CellUpdate[] = [{ header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() }];
-    const notes = [safeDisplayText(leadValue(record, LEAD_HEADERS.NOTES))];
+    const notes: string[] = [];
 
     if (email) {
       updates.push({ header: LEAD_HEADERS.EMAIL, value: email });
       updates.push({ header: LEAD_HEADERS.NORMALIZED_EMAIL, value: email });
       notes.push(`Address found automatically via ${source} — verify before approving.`);
-      found += 1;
     } else {
-      notes.push(result.diagnosis || 'No published contact address found on the site or in search.');
-      if (!failureExample) failureExample = result.diagnosis;
+      notes.push(stampText(stamp, result.diagnosis || 'No published contact address found on the site or in search.'));
     }
+    notes.push(operatorNotes(record));
     if (!safeDisplayText(leadValue(record, LEAD_HEADERS.CATEGORY)) && result.category) {
       updates.push({ header: LEAD_HEADERS.CATEGORY, value: result.category });
     }
@@ -145,20 +199,38 @@ export async function runResearch(accessToken: string, maxRows: number): Promise
       header: LEAD_HEADERS.NOTES,
       value: sanitizeUiMultilineText(notes.filter(Boolean).join('\n'), 2000)
     });
-    writes.push({ record, updates });
+    return { write: { record, updates }, found: Boolean(email), diagnosis: result.diagnosis };
   };
 
   // A small worker pool: each worker takes the next row until the queue is
-  // empty or the time budget is spent.
+  // empty or the time budget is spent. A row that overruns its cap is
+  // stamped and left for a later retry, so it cannot stall the burst.
   let index = 0;
   const worker = async () => {
-    while (index < queue.length && Date.now() - started < RESEARCH_TIME_BUDGET_MS) {
+    while (index < queue.length && Date.now() < deadline) {
       const record = queue[index];
       index += 1;
       try {
-        await researchOne(record);
-      } catch {
-        // One bad site must not stop the rest.
+        const outcome = await withTimeout(researchOne(record), RESEARCH_ROW_CAP_MS);
+        writes.push(outcome.write);
+        if (outcome.found) found += 1;
+        else if (!failureExample) failureExample = outcome.diagnosis;
+      } catch (error) {
+        const reason =
+          error instanceof Error && error.message === 'timeout'
+            ? `The site did not answer within ${RESEARCH_ROW_CAP_MS / 1000} s.`
+            : 'Research failed for this site.';
+        writes.push({
+          record,
+          updates: [
+            { header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() },
+            {
+              header: LEAD_HEADERS.NOTES,
+              value: sanitizeUiMultilineText([stampText(stamp, reason), operatorNotes(record)].filter(Boolean).join('\n'), 2000)
+            }
+          ]
+        });
+        if (!failureExample) failureExample = reason;
       }
     }
   };

@@ -1,6 +1,5 @@
 import { LEAD_HEADERS, STATUS } from '@/lib/constants';
 import { discoverBrands } from '@/lib/discover';
-import { runResearch } from '@/lib/pipeline';
 import { newLeadId, readArgs } from '@/lib/request';
 import { getLeadsTable, leadValue } from '@/lib/sheets';
 import { appendLeadRows, appendLogRow } from '@/lib/sheets-write';
@@ -75,10 +74,6 @@ export async function POST(request: Request) {
 
     await appendLeadRows(operator.accessToken, rows);
 
-    // Finding a company without its address leaves the operator with a row they
-    // cannot act on, so research follows discovery in the same press.
-    const research = rows.length ? await runResearch(operator.accessToken, 100) : null;
-
     if (rows.length) {
       await appendLogRow(operator.accessToken, {
         action: 'DISCOVER',
@@ -99,8 +94,9 @@ export async function POST(request: Request) {
       skipped: rejected,
       replies: 0,
       errors: 0,
+      added: rows.length,
       message: rows.length
-        ? `${rows.length} new brand(s) added from ${queriesRun} search(es); addresses found for ${research?.found ?? 0} of the ${research?.researched ?? 0} researched${research && research.remaining > 0 ? ` (${research.remaining} still queued — press Research companies)` : ''}.`
+        ? `${rows.length} new brand(s) added from ${queriesRun} search(es).`
         : `${queriesRun} search(es) ran but every result was already in the Sheet or was rejected (${rejected} marketplaces, publishers or roundups).`
     });
   } catch (error) {

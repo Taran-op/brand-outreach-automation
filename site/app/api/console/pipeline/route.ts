@@ -1,7 +1,6 @@
-import { DiscoveryNotConfigured } from '@/lib/discover';
 import { isSystemDisabled } from '@/lib/killswitch';
 import { dueFollowUpAction } from '@/lib/leads';
-import { autoApproveEnabled, runAutoApprove, runDiscovery, runResearch } from '@/lib/pipeline';
+import { autoApproveEnabled, runAutoApprove } from '@/lib/pipeline';
 import { campaignWindowOpen, runSendJob, sendsArmed } from '@/lib/send';
 import { errorResponse, requireMailboxOwner } from '@/lib/session';
 
@@ -10,9 +9,11 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 /**
- * Discover, research, approve and send in one press. Discovery is attempted
- * when the search API is configured and skipped with a note when it is not;
- * every other stage is bounded by the same caps as its individual button.
+ * The approve-and-send half of "Run full pipeline". The console runs
+ * discovery and research first through their own routes, each of which
+ * fits the function limit on its own, then calls this as many times as the
+ * send summary reports leads remaining. Every stage is bounded by the same
+ * caps as its individual button.
  */
 export async function POST() {
   try {
@@ -27,44 +28,26 @@ export async function POST() {
       throw Object.assign(new Error('Emergency disable is active.'), { status: 409 });
     }
 
-    const parts: string[] = [];
-
-    try {
-      const discovered = await runDiscovery(operator.accessToken, 17);
-      parts.push(`discovered ${discovered.added}`);
-    } catch (error) {
-      parts.push(error instanceof DiscoveryNotConfigured ? 'discovery not configured' : 'discovery failed');
-    }
-
-    const research = await runResearch(operator.accessToken, 100);
-    parts.push(`researched ${research.researched}, found ${research.found} address(es)`);
-
+    let approved = 0;
     let refusals: string[] = [];
+    let approvalNote = 'approval left to you (set CONSOLE_AUTO_APPROVE=true to skip it)';
     if (autoApproveEnabled()) {
       const approval = await runAutoApprove(operator.accessToken);
-      parts.push(`approved ${approval.approved}`);
+      approved = approval.approved;
       refusals = approval.refusals;
-    } else {
-      parts.push('approval left to you (set CONSOLE_AUTO_APPROVE=true to skip it)');
+      approvalNote = `approved ${approved}`;
     }
 
     const send = await runSendJob(operator.accessToken, 'INITIALS', dueFollowUpAction);
-    parts.push(`sent ${send.sent}`);
 
     return Response.json({
+      ...send,
       job: 'PIPELINE',
-      mode: 'LIVE',
-      processed: research.researched,
-      sent: send.sent,
-      dryRun: 0,
-      testSent: 0,
-      skipped: send.skipped,
-      replies: 0,
-      errors: send.errors,
+      approved,
+      refusals,
       message:
-        `${parts.join(', ')}. ${send.message}` +
-        (refusals.length ? ` Refused approval: ${refusals.join('; ')}.` : '') +
-        (research.found === 0 && research.failureExample ? ` Research example: ${research.failureExample}` : '')
+        `${approvalNote}, sent ${send.sent}. ${send.message}` +
+        (refusals.length ? ` Refused approval: ${refusals.join('; ')}.` : '')
     });
   } catch (error) {
     return errorResponse(error);

@@ -385,14 +385,27 @@ export type JobSummary = {
   errors: number;
   message: string;
   stoppedForLimit?: boolean;
+  /** True when the burst ended for time with eligible leads still waiting. */
+  stoppedForTime?: boolean;
+  /** Eligible leads this burst did not reach. */
+  remaining?: number;
 };
+
+/**
+ * A burst stops taking new leads here so the one in flight, and its Sheet
+ * writes, finish inside the 300 s function limit. The console continues
+ * with another burst while the summary reports leads remaining.
+ */
+const SEND_TIME_BUDGET_MS = 240_000;
 
 export async function runSendJob(
   accessToken: string,
   job: 'INITIALS' | 'FOLLOW_UPS',
-  dueAction: (record: LeadRecord, now: Date) => string
+  dueAction: (record: LeadRecord, now: Date) => string,
+  options: { deadline?: number } = {}
 ): Promise<JobSummary> {
   const now = new Date();
+  const deadline = Math.min(options.deadline ?? Infinity, now.getTime() + SEND_TIME_BUDGET_MS);
   const summary: JobSummary = {
     job,
     mode: 'LIVE',
@@ -455,6 +468,10 @@ export async function runSendJob(
       summary.stoppedForLimit = true;
       break;
     }
+    if (Date.now() >= deadline) {
+      summary.stoppedForTime = true;
+      break;
+    }
     summary.processed += 1;
 
     const action = (job === 'INITIALS' ? ACTION.INITIAL : dueAction(record, now)) as ActionValue;
@@ -477,8 +494,10 @@ export async function runSendJob(
     }
   }
 
+  summary.remaining = candidates.length - summary.processed;
   summary.message =
     `${summary.sent} sent, ${summary.skipped} skipped, ${summary.errors} error(s). ` +
-    `Daily cap ${CONFIG.SAFETY.DAILY_SEND_LIMIT}, ${alreadySent + summary.sent} used today.`;
+    `Daily cap ${CONFIG.SAFETY.DAILY_SEND_LIMIT}, ${alreadySent + summary.sent} used today.` +
+    (summary.stoppedForTime ? ` ${summary.remaining} eligible lead(s) wait for the next burst.` : '');
   return summary;
 }

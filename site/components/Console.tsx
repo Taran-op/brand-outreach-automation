@@ -28,7 +28,16 @@ type Bootstrap = {
 
 type Preview = { action: string; to: string; cc: string[]; subject: string; body: string; warnings: string[] };
 type JobSummary = { job: string; mode: string; processed: number; sent: number; dryRun: number; testSent: number;
-  skipped: number; replies: number; errors: number; message: string; stoppedForLimit?: boolean; lockedOut?: boolean };
+  skipped: number; replies: number; errors: number; message: string; stoppedForLimit?: boolean; lockedOut?: boolean;
+  stoppedForTime?: boolean; remaining?: number; found?: number; added?: number };
+
+/**
+ * Research and sending run in bursts sized to the server's time limit, and
+ * the console keeps pressing on the operator's behalf while the server
+ * reports work remaining. The bound keeps a server that never reports zero
+ * from looping forever.
+ */
+const MAX_BURSTS = 40;
 type ImportResult = { imported: number; withoutEmail: number; skipped: { row: number; value: string; reason: string }[] };
 type WorkbookSheet = { name: string; rows: string[][] };
 type WorkbookUpload = { fileName: string; fileBytes: number; sheets: WorkbookSheet[] };
@@ -144,6 +153,7 @@ function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
+  const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
@@ -183,7 +193,25 @@ function App() {
     setBusy(label); setError(''); setNotice('');
     try { return await action(); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); throw e; }
-    finally { setBusy(''); }
+    finally { setBusy(''); setProgress(''); }
+  };
+
+  /** Researches until the server reports nothing queued (or the burst bound). */
+  const researchAll = async () => {
+    let researched = 0, found = 0, remaining = 0, bursts = 0, message = '';
+    do {
+      setProgress(bursts ? `Researching… ${researched} done, ${found} address(es) found, ${remaining} queued` : 'Researching companies…');
+      const result = await callServer<JobSummary>('uiEnrichLeads');
+      researched += result?.processed || 0;
+      found += result?.found || 0;
+      remaining = result?.remaining || 0;
+      message = result?.message || '';
+      bursts += 1;
+    } while (remaining > 0 && bursts < MAX_BURSTS);
+    const summary = bursts > 1
+      ? `${researched} researched over ${bursts} bursts, ${found} address(es) found${remaining ? `; ${remaining} still queued — press Research companies again` : ''}. Rows stay NEW — review and approve before anything is sent.`
+      : message || 'Research finished.';
+    return { researched, found, remaining, bursts, summary };
   };
 
   const openPreview = async (lead: Lead) => {
@@ -267,18 +295,47 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
+  // Discover, research, approve and send, each stage through the route that
+  // fits the server's time limit on its own, continuing while work remains.
   const runPipeline = async () => {
     try {
-      const result = await run('pipeline', () => callServer<JobSummary>('uiRunPipeline'));
-      setNotice(result?.message || 'Pipeline finished.');
+      const result = await run('pipeline', async () => {
+        const parts: string[] = [];
+        setProgress('Discovering brands…');
+        try {
+          const discovered = await callServer<JobSummary>('uiDiscoverBrands', []);
+          parts.push(`discovered ${discovered?.added || 0}`);
+        } catch (e) {
+          parts.push(`discovery skipped — ${e instanceof Error ? e.message : String(e)}`);
+        }
+        const research = await researchAll();
+        parts.push(`researched ${research.researched}, found ${research.found} address(es)`);
+
+        let sent = 0, bursts = 0, last: JobSummary | undefined;
+        do {
+          setProgress(bursts ? `Sending… ${sent} sent so far` : 'Approving and sending…');
+          last = await callServer<JobSummary>('uiRunPipeline');
+          sent += last?.sent || 0;
+          bursts += 1;
+        } while (last?.stoppedForTime && (last?.remaining || 0) > 0 && bursts < MAX_BURSTS);
+        return `${parts.join(', ')}. ${last?.message || ''}${bursts > 1 ? ` ${sent} sent over ${bursts} bursts.` : ''}`;
+      });
+      setNotice(result || 'Pipeline finished.');
       await refresh(true);
     } catch { /* surfaced globally */ }
   };
 
   const discoverBrands = async () => {
     try {
-      const result = await run('discover', () => callServer<JobSummary>('uiDiscoverBrands', []));
-      setNotice(result?.message || 'Discovery finished.');
+      const result = await run('discover', async () => {
+        setProgress('Searching for brands…');
+        const discovered = await callServer<JobSummary>('uiDiscoverBrands', []);
+        // A company without an address is a row nobody can act on, so
+        // research follows discovery in the same press.
+        const research = discovered?.added ? await researchAll() : null;
+        return `${discovered?.message || 'Discovery finished.'}${research ? ` Addresses found for ${research.found} of ${research.researched} researched${research.remaining ? ` (${research.remaining} still queued — press Research companies)` : ''}.` : ''}`;
+      });
+      setNotice(result);
       await refresh(true);
     } catch { /* surfaced globally */ }
   };
@@ -293,8 +350,8 @@ function App() {
 
   const runEnrichment = async () => {
     try {
-      const result = await run('enrich', () => callServer<JobSummary>('uiEnrichLeads'));
-      setNotice(result?.message || 'Research finished.');
+      const result = await run('enrich', researchAll);
+      setNotice(result.summary);
       await refresh(true);
     } catch { /* surfaced globally */ }
   };
@@ -302,11 +359,28 @@ function App() {
   const executeJob = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      const result = await run('job', () => callServer<JobSummary>('uiRunJob', pendingJob, confirmation));
+      const result = await run('job', async () => {
+        // One typed confirmation covers the whole queue: a send burst that
+        // stops for the server's time limit is continued here until the
+        // queue, the per-run cap or the daily cap ends it.
+        const total = { processed: 0, sent: 0, skipped: 0, errors: 0 };
+        let bursts = 0, last: JobSummary | undefined;
+        do {
+          if (bursts) setProgress(`Sending… ${total.sent} sent so far, ${last?.remaining || 0} waiting`);
+          last = await callServer<JobSummary>('uiRunJob', pendingJob, confirmation);
+          total.processed += last?.processed || 0;
+          total.sent += last?.sent || 0;
+          total.skipped += last?.skipped || 0;
+          total.errors += last?.errors || 0;
+          bursts += 1;
+        } while (last?.stoppedForTime && (last?.remaining || 0) > 0 && bursts < MAX_BURSTS);
+        return { last, total, bursts };
+      });
       // The server's message carries the reason — a daily cap already reached,
       // no eligible rows, a refused address — and a bare count without it
       // reads as the job silently doing nothing.
-      setNotice(`${result?.job || pendingJob}: ${result?.mode}. Processed ${result?.processed || 0}; live sent ${result?.sent || 0}; skipped ${result?.skipped || 0}; errors ${result?.errors || 0}.${result?.message ? ` ${result.message}` : ''}`);
+      const { last, total, bursts } = result;
+      setNotice(`${last?.job || pendingJob}: ${last?.mode}. Processed ${total.processed}; live sent ${total.sent}; skipped ${total.skipped}; errors ${total.errors}${bursts > 1 ? ` over ${bursts} bursts` : ''}.${last?.message ? ` ${last.message}` : ''}`);
       setModal(null); await refresh(true);
     } catch { /* surfaced globally */ }
   };
@@ -400,7 +474,7 @@ function App() {
     {modal === 'disable' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Emergency disable"><div className="modal compact"><div className="modal-head"><div><span className="eyebrow danger-text">SAFETY CONTROL</span><h2>Disable all outreach now?</h2></div><button onClick={() => setModal(null)}><Icon name="close"/></button></div><p>This enables the shared runtime kill switch, revokes the authorized trigger generation and removes outreach triggers owned by this Google account. It does not delete leads or logs.</p><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="danger-button" onClick={emergencyDisable}>Enable kill switch</button></div></div></div>}
 
     {drawerLead && <LeadDrawer lead={drawerLead} statuses={data?.statuses || []} categories={data?.categories || []} onClose={() => setDrawerLead(null)} onSave={saveLead}/>} 
-    {busy && <div className="busy-pill"><div className="loader small"/>{busy === 'preview' ? 'Generating preview' : 'Working safely'}…</div>}
+    {busy && <div className="busy-pill"><div className="loader small"/>{progress || (busy === 'preview' ? 'Generating preview…' : 'Working safely…')}</div>}
   </div>;
 }
 

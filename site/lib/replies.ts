@@ -499,7 +499,12 @@ export type ReplyScanSummary = {
   message: string;
 };
 
-export async function runReplyScan(accessToken: string, maxRows: number): Promise<ReplyScanSummary> {
+export async function runReplyScan(
+  accessToken: string,
+  maxRows: number,
+  options: { deadline?: number } = {}
+): Promise<ReplyScanSummary> {
+  const deadline = options.deadline ?? Infinity;
   const records = await getLeadRows(accessToken);
   const ownAddresses = await getOwnAddresses(accessToken);
 
@@ -518,6 +523,9 @@ export async function runReplyScan(accessToken: string, maxRows: number): Promis
   const checkedAt = new Date().toISOString();
 
   for (const record of candidates) {
+    // Least-recently-checked threads come first, so stopping for time
+    // leaves the freshest ones for the next run rather than the stalest.
+    if (Date.now() >= deadline) break;
     summary.processed += 1;
     try {
       const response = await detectThreadResponse(accessToken, record, ownAddresses);

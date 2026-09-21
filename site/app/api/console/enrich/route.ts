@@ -1,5 +1,5 @@
 import { LEAD_HEADERS, STATUS } from '@/lib/constants';
-import { runResearch } from '@/lib/pipeline';
+import { researchedRecently, runResearch } from '@/lib/pipeline';
 import { getLeadRows, leadValue } from '@/lib/sheets';
 import { errorResponse, requireOperator } from '@/lib/session';
 import { normalizeStatus } from '@/lib/templates';
@@ -40,8 +40,10 @@ export async function POST() {
         summary({
           processed: result.researched,
           skipped: result.researched - result.found,
+          found: result.found,
+          remaining: result.remaining,
           message:
-            `${result.researched} researched, ${result.found} address(es) found${result.remaining > 0 ? `; ${result.remaining} still queued — press again` : ''}. Rows stay NEW — review and approve before anything is sent.` +
+            `${result.researched} researched, ${result.found} address(es) found${result.remaining > 0 ? `; ${result.remaining} still queued` : ''}. Rows stay NEW — review and approve before anything is sent.` +
             (result.found === 0 && result.failureExample ? ` Example: ${result.failureExample}` : '')
         })
       );
@@ -54,13 +56,16 @@ export async function POST() {
     const withEmail = newRows.filter((r) => isValidSingleEmail(normalizeEmail(leadValue(r, LEAD_HEADERS.EMAIL)))).length;
     const withoutWebsite = newRows.filter((r) => !safeDisplayText(leadValue(r, LEAD_HEADERS.WEBSITE))).length;
     const withoutCompany = newRows.filter((r) => !safeDisplayText(leadValue(r, LEAD_HEADERS.COMPANY))).length;
+    const restingRows = newRows.filter((r) => researchedRecently(r)).length;
 
     return Response.json(
       summary({
         message:
           `Nothing to research. Of ${records.length} lead(s), ${newRows.length} are NEW; ` +
-          `${withEmail} already have an email, ${withoutWebsite} have no Website, ${withoutCompany} have no Company. ` +
-          'Research needs a NEW row with a Company and a Website but no email yet.'
+          `${withEmail} already have an email, ${withoutWebsite} have no Website, ${withoutCompany} have no Company` +
+          `${restingRows ? `, ${restingRows} were researched in the last 14 days with no result` : ''}. ` +
+          'Research needs a NEW row with a Company and a Website but no email yet. ' +
+          'To retry a row sooner, clear the [auto-research …] note on it.'
       })
     );
   } catch (error) {

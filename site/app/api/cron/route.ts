@@ -17,6 +17,14 @@ const discoveryEnabled = () => process.env.AUTOMATION_DISCOVER === 'true';
 const researchEnabled = () => process.env.AUTOMATION_RESEARCH === 'true';
 
 /**
+ * The whole run must finish inside the 300 s function limit, so each stage
+ * is handed a deadline and the later stages get whatever is left. Sending
+ * is the stage that matters most, so research is given a fixed slice.
+ */
+const RUN_BUDGET_MS = 270_000;
+const RESEARCH_SLICE_MS = 45_000;
+
+/**
  * The unattended daily run, in this order for a reason:
  *
  *   1. replies    — an opt-out received overnight must suppress its lead
@@ -28,16 +36,22 @@ const researchEnabled = () => process.env.AUTOMATION_RESEARCH === 'true';
  *   6. initials   — first contact (AUTOMATION_SEND_INITIALS)
  *
  * Every stage is bounded by the same caps as the buttons, and a failure in an
- * optional stage is recorded and skipped rather than halting the run.
+ * optional stage is recorded and skipped rather than halting the run. What a
+ * stage cannot finish today waits for tomorrow's run.
  */
 export async function GET(request: Request) {
   try {
     assertCronAuthorized(request);
     const accessToken = await getAutomationAccessToken();
     const startedAt = new Date();
+    const deadline = startedAt.getTime() + RUN_BUDGET_MS;
     const results: Record<string, unknown> = {};
 
-    results.replies = await runReplyScan(accessToken, CONFIG.SAFETY.MAX_REPLY_CHECKS_PER_RUN);
+    // Replies may take at most a third of the run: an opt-out must be seen
+    // before sending, but a slow mailbox must not starve the send stages.
+    results.replies = await runReplyScan(accessToken, CONFIG.SAFETY.MAX_REPLY_CHECKS_PER_RUN, {
+      deadline: startedAt.getTime() + RUN_BUDGET_MS / 3
+    });
 
     if (discoveryEnabled()) {
       try {
@@ -47,15 +61,17 @@ export async function GET(request: Request) {
       }
     }
 
-    if (researchEnabled()) results.research = await runResearch(accessToken, 100);
+    if (researchEnabled()) {
+      results.research = await runResearch(accessToken, 100, { deadline: Date.now() + RESEARCH_SLICE_MS });
+    }
 
     const armed = sendsArmed() && campaignWindowOpen(startedAt) && !(await isSystemDisabled(accessToken));
 
     if (armed) {
       if (autoApproveEnabled()) results.approve = await runAutoApprove(accessToken);
-      results.followUps = await runSendJob(accessToken, 'FOLLOW_UPS', dueFollowUpAction);
+      results.followUps = await runSendJob(accessToken, 'FOLLOW_UPS', dueFollowUpAction, { deadline });
       if (process.env.AUTOMATION_SEND_INITIALS === 'true') {
-        results.initials = await runSendJob(accessToken, 'INITIALS', dueFollowUpAction);
+        results.initials = await runSendJob(accessToken, 'INITIALS', dueFollowUpAction, { deadline });
       }
     } else {
       results.sending = 'skipped — not armed, outside the campaign window, or emergency disable is set';
