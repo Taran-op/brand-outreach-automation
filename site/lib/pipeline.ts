@@ -11,7 +11,7 @@ import {
 } from './approval';
 import { LEAD_HEADERS, STATUS } from './constants';
 import { discoverBrands } from './discover';
-import { enrichCompany } from './enrich';
+import { enrichCompany, searchForEmail } from './enrich';
 import { newLeadId } from './request';
 import { getLeadRows, getLeadsTable, leadValue, type LeadRecord } from './sheets';
 import { appendLeadRows, appendLogRow, updateManyLeadCells, type CellUpdate, type RowUpdate } from './sheets-write';
@@ -88,29 +88,53 @@ const needsResearch = (record: LeadRecord): boolean =>
   Boolean(safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY))) &&
   Boolean(safeDisplayText(leadValue(record, LEAD_HEADERS.WEBSITE)));
 
-export type ResearchSummary = { researched: number; found: number; failureExample: string };
+export type ResearchSummary = { researched: number; found: number; remaining: number; failureExample: string };
 
+/** Stop starting new rows past this so the function returns before its limit. */
+const RESEARCH_TIME_BUDGET_MS = 230_000;
+const RESEARCH_CONCURRENCY = 5;
+
+/**
+ * Finds addresses for rows that lack one. Two sources per company: its own
+ * site first, then a web search for addresses on its domain when the site
+ * publishes none. Rows are worked several at a time inside a fixed time
+ * budget, so a click clears as many as the function can, and the summary
+ * says how many are still waiting.
+ */
 export async function runResearch(accessToken: string, maxRows: number): Promise<ResearchSummary> {
   const records = await getLeadRows(accessToken);
-  const candidates = records.filter(needsResearch).slice(0, maxRows);
+  const pending = records.filter(needsResearch);
+  const queue = pending.slice(0, maxRows);
+  const started = Date.now();
   let found = 0;
   let failureExample = '';
   const writes: RowUpdate[] = [];
 
-  for (const record of candidates) {
+  const researchOne = async (record: LeadRecord) => {
     const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
-    const result = await enrichCompany(leadValue(record, LEAD_HEADERS.WEBSITE), company);
+    const website = leadValue(record, LEAD_HEADERS.WEBSITE);
+    const result = await enrichCompany(website, company);
+
+    let email = result.email;
+    let source = result.sourceUrl;
+    if (!email) {
+      const searched = await searchForEmail(company, String(website || ''));
+      if (searched.email) {
+        email = searched.email;
+        source = searched.source;
+      }
+    }
 
     const updates: CellUpdate[] = [{ header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() }];
     const notes = [safeDisplayText(leadValue(record, LEAD_HEADERS.NOTES))];
 
-    if (result.email) {
-      updates.push({ header: LEAD_HEADERS.EMAIL, value: result.email });
-      updates.push({ header: LEAD_HEADERS.NORMALIZED_EMAIL, value: result.email });
-      notes.push(`Address found automatically on ${result.sourceUrl} — verify before approving.`);
+    if (email) {
+      updates.push({ header: LEAD_HEADERS.EMAIL, value: email });
+      updates.push({ header: LEAD_HEADERS.NORMALIZED_EMAIL, value: email });
+      notes.push(`Address found automatically via ${source} — verify before approving.`);
       found += 1;
     } else {
-      notes.push(result.diagnosis || 'No published contact address found.');
+      notes.push(result.diagnosis || 'No published contact address found on the site or in search.');
       if (!failureExample) failureExample = result.diagnosis;
     }
     if (!safeDisplayText(leadValue(record, LEAD_HEADERS.CATEGORY)) && result.category) {
@@ -122,17 +146,35 @@ export async function runResearch(accessToken: string, maxRows: number): Promise
       value: sanitizeUiMultilineText(notes.filter(Boolean).join('\n'), 2000)
     });
     writes.push({ record, updates });
-  }
+  };
+
+  // A small worker pool: each worker takes the next row until the queue is
+  // empty or the time budget is spent.
+  let index = 0;
+  const worker = async () => {
+    while (index < queue.length && Date.now() - started < RESEARCH_TIME_BUDGET_MS) {
+      const record = queue[index];
+      index += 1;
+      try {
+        await researchOne(record);
+      } catch {
+        // One bad site must not stop the rest.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: RESEARCH_CONCURRENCY }, worker));
+
   await updateManyLeadCells(accessToken, writes);
 
-  if (candidates.length) {
+  const researched = writes.length;
+  if (researched) {
     await appendLogRow(accessToken, {
       action: 'ENRICH',
       result: 'SUCCESS',
-      message: `${candidates.length} row(s) researched; ${found} address(es) found. All rows remain NEW.`
+      message: `${researched} row(s) researched; ${found} address(es) found. All rows remain NEW.`
     });
   }
-  return { researched: candidates.length, found, failureExample };
+  return { researched, found, remaining: pending.length - researched, failureExample };
 }
 
 export type ApproveSummary = { approved: number; refusals: string[] };

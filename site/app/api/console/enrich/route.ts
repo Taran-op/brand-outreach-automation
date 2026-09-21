@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-const MAX_ROWS_PER_RUN = 25;
+const MAX_ROWS_PER_RUN = 100;
 
 const summary = (fields: Record<string, unknown>) => ({
   job: 'ENRICH',
@@ -41,7 +41,7 @@ export async function POST() {
           processed: result.researched,
           skipped: result.researched - result.found,
           message:
-            `${result.researched} researched, ${result.found} address(es) found. Rows stay NEW — review and approve before anything is sent.` +
+            `${result.researched} researched, ${result.found} address(es) found${result.remaining > 0 ? `; ${result.remaining} still queued — press again` : ''}. Rows stay NEW — review and approve before anything is sent.` +
             (result.found === 0 && result.failureExample ? ` Example: ${result.failureExample}` : '')
         })
       );

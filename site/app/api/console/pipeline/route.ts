@@ -36,7 +36,7 @@ export async function POST() {
       parts.push(error instanceof DiscoveryNotConfigured ? 'discovery not configured' : 'discovery failed');
     }
 
-    const research = await runResearch(operator.accessToken, 25);
+    const research = await runResearch(operator.accessToken, 100);
     parts.push(`researched ${research.researched}, found ${research.found} address(es)`);
 
     let refusals: string[] = [];

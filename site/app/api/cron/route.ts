@@ -47,7 +47,7 @@ export async function GET(request: Request) {
       }
     }
 
-    if (researchEnabled()) results.research = await runResearch(accessToken, 25);
+    if (researchEnabled()) results.research = await runResearch(accessToken, 100);
 
     const armed = sendsArmed() && campaignWindowOpen(startedAt) && !(await isSystemDisabled(accessToken));
 

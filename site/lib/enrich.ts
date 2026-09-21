@@ -335,3 +335,55 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
     diagnosis
   };
 }
+
+/**
+ * Second source: ask the search engine for addresses on the company's domain.
+ * Many companies publish partnerships or press contacts on pages a shallow
+ * crawl never reaches — a media kit, a PDF, a directory listing — and search
+ * snippets surface them. Only addresses on the company's own domain are kept,
+ * so a directory's own contact address can never be attributed to the brand.
+ */
+export async function searchForEmail(companyName: string, website: string): Promise<{ email: string; source: string }> {
+  const key = process.env.SERPER_API_KEY;
+  if (!key) return { email: '', source: '' };
+
+  let host = '';
+  try {
+    host = new URL(normalizeImportWebsite(website)).hostname.replace(/^www\./i, '').toLowerCase();
+  } catch {
+    return { email: '', source: '' };
+  }
+  if (!host) return { email: '', source: '' };
+
+  const query = `"@${host}" ${companyName} (partnerships OR marketing OR brand OR press OR business OR contact)`;
+  let organic: { title?: string; link?: string; snippet?: string }[] = [];
+  try {
+    const response = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, gl: 'in', hl: 'en', num: 10 }),
+      cache: 'no-store'
+    });
+    if (!response.ok) return { email: '', source: '' };
+    organic = ((await response.json()) as { organic?: typeof organic }).organic || [];
+  } catch {
+    return { email: '', source: '' };
+  }
+
+  const candidates: string[] = [];
+  let source = '';
+  for (const item of organic) {
+    const text = `${item.title || ''} ${item.snippet || ''}`;
+    const found = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}/gi) || [];
+    const onDomain = found.filter((email) => {
+      const domain = email.split('@')[1]?.toLowerCase() || '';
+      return domain === host || domain.endsWith(`.${host}`);
+    });
+    if (onDomain.length) {
+      candidates.push(...onDomain);
+      if (!source) source = item.link || 'search';
+    }
+  }
+
+  return { email: chooseBestEmail(candidates, host), source };
+}
