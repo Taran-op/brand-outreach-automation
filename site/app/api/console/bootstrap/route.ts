@@ -1,6 +1,7 @@
 import { CONFIG, isMailboxOwner, mailboxOwner, spreadsheetUrl } from '@/lib/config';
 import { CATEGORY_VALUES, STATUS_VALUES } from '@/lib/constants';
 import { summarize, toLead } from '@/lib/leads';
+import { getReplyRows } from '@/lib/replies-sheet';
 import { getLeadRows, getLogEntries } from '@/lib/sheets';
 import { replyRoutingWarning } from '@/lib/deliverability';
 import { getRoutingVerifiedAt, isSystemDisabled } from '@/lib/killswitch';
@@ -14,10 +15,31 @@ export async function GET() {
     const operator = await requireOperator();
     const now = new Date();
 
-    const [records, logs] = await Promise.all([
+    const [records, logs, replyReport] = await Promise.all([
       getLeadRows(operator.accessToken),
-      getLogEntries(operator.accessToken, CONFIG.UI.MAX_LOG_ROWS)
+      getLogEntries(operator.accessToken, CONFIG.UI.MAX_LOG_ROWS),
+      // A brand-new Sheet has no Replies tab yet, and an unreadable report is
+      // never a reason to fail the whole dashboard.
+      getReplyRows(operator.accessToken, CONFIG.UI.MAX_REPLY_ROWS).catch(() => ({
+        headers: [] as string[],
+        rows: [] as string[][]
+      }))
     ]);
+
+    const replyIndex = (header: string) => replyReport.headers.indexOf(header);
+    const replyCell = (row: string[], header: string) => {
+      const index = replyIndex(header);
+      return index >= 0 ? row[index] || '' : '';
+    };
+    const replies = replyReport.rows.map((row) => ({
+      repliedAt: replyCell(row, 'Replied At'),
+      company: replyCell(row, 'Company'),
+      from: replyCell(row, 'Replied From'),
+      type: replyCell(row, 'Response Type'),
+      subject: replyCell(row, 'Subject'),
+      snippet: replyCell(row, 'Reply Snippet'),
+      thread: replyCell(row, 'Thread')
+    }));
 
     const allLeads = records.map((record) => toLead(record, now));
     const { statusCounts, metrics } = summarize(allLeads);
@@ -74,6 +96,7 @@ export async function GET() {
       leads,
       truncated: allLeads.length > leads.length,
       logs,
+      replies: { tab: CONFIG.SHEETS.REPLIES_NAME, items: replies },
       spreadsheetUrl: spreadsheetUrl()
     });
   } catch (error) {

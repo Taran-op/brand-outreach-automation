@@ -109,6 +109,38 @@ export const VISIBLE_LEAD_HEADERS: string[] = [
   LEAD_HEADERS.OPT_OUT
 ];
 
+/**
+ * The Replies tab: one row per inbound message from a brand, in this column
+ * order. It is a report, not a ledger — the Leads tab stays the source of
+ * truth, and nothing here is ever read back to decide what to send.
+ */
+export const REPLY_HEADERS = [
+  'Replied At',
+  'Company',
+  'Contact Name',
+  'Replied From',
+  'Lead Email',
+  'Category',
+  'Website',
+  'Response Type',
+  'Subject',
+  'Reply Snippet',
+  'Initial Sent At',
+  'Days To Reply',
+  'Lead Status',
+  'Thread',
+  'Lead ID',
+  'Message ID'
+] as const;
+
+/** What a detected response is called in the Replies tab. */
+export const RESPONSE_TYPE_LABELS: Record<string, string> = {
+  REPLY: 'Reply',
+  OPT_OUT: 'Opt-out',
+  AUTO_REPLY: 'Auto-reply',
+  BOUNCE: 'Bounce'
+};
+
 export const ACTION = {
   INITIAL: 'INITIAL',
   FOLLOW_UP_1: 'FOLLOW_UP_1',

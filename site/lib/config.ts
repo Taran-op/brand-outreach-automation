@@ -54,13 +54,15 @@ export const CONFIG = {
 
   SHEETS: {
     LEADS_NAME: 'Leads',
-    LOG_NAME: 'Outreach Log'
+    LOG_NAME: 'Outreach Log',
+    REPLIES_NAME: 'Replies'
   },
 
   UI: {
     TITLE: 'Brand Outreach Console',
     MAX_LEADS_RETURNED: 500,
     MAX_LOG_ROWS: 80,
+    MAX_REPLY_ROWS: 60,
     MAX_IMPORT_ROWS: 500,
     MAX_IMPORT_COLUMNS: 40,
     MAX_IMPORT_CHARACTERS: 300000,

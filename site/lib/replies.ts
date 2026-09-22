@@ -16,12 +16,13 @@ import {
   STATUS,
   type ActionValue
 } from './constants';
-import { GmailError } from './gmail';
+import { decodeRfc2047Header, GmailError } from './gmail';
 import { findRepliesInMailbox, mailboxConfigured, type InboundMessage } from './hostinger';
+import { appendReplyRows, buildReplyRecord, recordedReplyKeys, type RecordedKeys, type ReplyRecord } from './replies-sheet';
 import { getLeadRows, leadValue, type LeadRecord } from './sheets';
 import { appendLogRows, updateManyLeadCells, type CellUpdate, type LogInput, type RowUpdate } from './sheets-write';
 import { hasPendingAction, normalizeStatus } from './templates';
-import { isTrue, normalizeEmail, safeDisplayText } from './text';
+import { isTrue, normalizeEmail, safeDisplayText, truncate } from './text';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
@@ -207,7 +208,14 @@ export type DetectedResponse = {
   threadId: string;
   from: string;
   receivedAt: Date;
+  /** For the Replies report. Never read by anything that decides a send. */
+  subject: string;
+  /** The top, unquoted text only — the same portion the classifier reads. */
+  snippet: string;
 };
+
+/** How much of a reply the report keeps; the full message stays in the mailbox. */
+const SNIPPET_LENGTH = 900;
 
 /**
  * One shape for a message from either mailbox, so the classifier below does
@@ -326,7 +334,9 @@ export async function detectThreadResponse(
       messageId: message.id,
       threadId: message.threadId,
       from: fromAddresses[0] || '',
-      receivedAt: message.receivedAt
+      receivedAt: message.receivedAt,
+      subject: decodeRfc2047Header(message.header('Subject')),
+      snippet: ''
     };
 
     if (message.isOurs) {
@@ -339,21 +349,22 @@ export async function detectThreadResponse(
     // Internal CC colleagues replying-all are not the brand.
     if (!fromAddresses.length || fromAddresses.every((email) => ownAddresses.has(email))) continue;
 
+    const topText = getTopUnquotedText(message.plainText());
+    const withText = { ...base, snippet: truncate(safeDisplayText(topText), SNIPPET_LENGTH) };
+
     if (isBounce(message.header)) {
-      if (!bounce) bounce = { type: 'BOUNCE', ...base };
+      if (!bounce) bounce = { type: 'BOUNCE', ...withText };
       continue;
     }
     if (isAutomated(message.header)) {
-      if (!autoReply) autoReply = { type: 'AUTO_REPLY', ...base };
+      if (!autoReply) autoReply = { type: 'AUTO_REPLY', ...withText };
       continue;
     }
-
-    const topText = getTopUnquotedText(message.plainText());
     if (containsStrongOptOut(topText)) {
-      if (!optOut) optOut = { type: 'OPT_OUT', ...base };
+      if (!optOut) optOut = { type: 'OPT_OUT', ...withText };
       continue;
     }
-    if (!humanReply) humanReply = { type: 'REPLY', ...base };
+    if (!humanReply) humanReply = { type: 'REPLY', ...withText };
   }
 
   return optOut || humanReply || manualOutbound || bounce || autoReply || null;
@@ -386,7 +397,7 @@ export function shouldCheckReplies(record: LeadRecord): boolean {
   ].includes(status as never);
 }
 
-export type PlannedResponse = { action: string; write: RowUpdate; log: LogInput };
+export type PlannedResponse = { action: string; status: string; write: RowUpdate; log: LogInput };
 
 /**
  * Decides what a detected response means for the row. Returns the write and
@@ -464,6 +475,7 @@ export function planDetectedResponse(record: LeadRecord, response: DetectedRespo
 
   return {
     action,
+    status,
     write: { record, updates },
     log: {
       company: safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY)),
@@ -496,8 +508,65 @@ export type ReplyScanSummary = {
   replies: number;
   optOuts: number;
   errors: number;
+  /** Rows added to the Replies tab by this scan, including backfilled ones. */
+  recorded: number;
   message: string;
 };
+
+/** Ours, so a manual message we sent is not reported as a brand reply. */
+const REPORTABLE_TYPES = new Set(['REPLY', 'OPT_OUT', 'AUTO_REPLY', 'BOUNCE']);
+
+/** What a lead's stored fields say happened, for rows that replied before
+ *  the Replies tab existed. */
+const HISTORIC_REPLY_STATUS: Record<string, string> = {
+  REPLY_DETECTED: 'REPLY',
+  OPTED_OUT: 'OPT_OUT',
+  AUTO_REPLY: 'AUTO_REPLY',
+  BOUNCE: 'BOUNCE'
+};
+
+/**
+ * Rows that answered before this report existed still belong in it. Their
+ * message text is long gone from our records, so the row carries what the
+ * Leads tab stored — who, when, and what kind of response it was — and says
+ * where the rest is.
+ */
+function historicReplyRecords(records: LeadRecord[], recorded: RecordedKeys): ReplyRecord[] {
+  const rows: ReplyRecord[] = [];
+  for (const record of records) {
+    const replyStatus = safeDisplayText(leadValue(record, LEAD_HEADERS.REPLY_STATUS)).toUpperCase();
+    const type = HISTORIC_REPLY_STATUS[replyStatus];
+    if (!type) continue;
+
+    const messageId = safeDisplayText(leadValue(record, LEAD_HEADERS.LAST_RESPONSE_MESSAGE_ID));
+    const leadId = safeDisplayText(leadValue(record, LEAD_HEADERS.LEAD_ID));
+    const key = messageId || `lead:${leadId || record.rowNumber}`;
+    // A lead already in the report is left alone: the row this would add
+    // carries no message text, so it could only duplicate a better one.
+    if (recorded.messageIds.has(key) || (leadId && recorded.leadIds.has(leadId))) continue;
+
+    const repliedAtRaw = safeDisplayText(leadValue(record, LEAD_HEADERS.LAST_REPLY_AT));
+    const repliedAt = new Date(repliedAtRaw);
+    rows.push(
+      buildReplyRecord(
+        record,
+        {
+          type,
+          from: normalizeEmail(leadValue(record, LEAD_HEADERS.SENT_TO_EMAIL)) || normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)),
+          receivedAt: Number.isNaN(repliedAt.getTime()) ? new Date() : repliedAt,
+          subject: '',
+          snippet: 'Recorded from the lead history — this reply arrived before the Replies tab existed, so open the thread to read it.',
+          threadId: safeDisplayText(leadValue(record, LEAD_HEADERS.GMAIL_THREAD_ID)),
+          messageId: key
+        },
+        normalizeStatus(leadValue(record, LEAD_HEADERS.STATUS))
+      )
+    );
+    recorded.messageIds.add(key);
+    if (leadId) recorded.leadIds.add(leadId);
+  }
+  return rows;
+}
 
 export async function runReplyScan(
   accessToken: string,
@@ -517,10 +586,22 @@ export async function runReplyScan(
     })
     .slice(0, maxRows);
 
-  const summary: ReplyScanSummary = { processed: 0, replies: 0, optOuts: 0, errors: 0, message: '' };
+  const summary: ReplyScanSummary = { processed: 0, replies: 0, optOuts: 0, errors: 0, recorded: 0, message: '' };
   const writes: RowUpdate[] = [];
   const logs: LogInput[] = [];
   const checkedAt = new Date().toISOString();
+
+  // Read once up front: what the report already holds decides both what this
+  // scan adds and what is backfilled.
+  let recordedKeys: RecordedKeys = { messageIds: new Set(), leadIds: new Set() };
+  let reportable = true;
+  try {
+    recordedKeys = await recordedReplyKeys(accessToken);
+  } catch {
+    // An unreadable Replies tab must not stop the scan that suppresses opt-outs.
+    reportable = false;
+  }
+  const replyRows: ReplyRecord[] = reportable ? historicReplyRecords(records, recordedKeys) : [];
 
   for (const record of candidates) {
     // Least-recently-checked threads come first, so stopping for time
@@ -536,6 +617,10 @@ export async function runReplyScan(
       const planned = planDetectedResponse(record, response);
       writes.push(planned.write);
       logs.push(planned.log);
+      if (reportable && REPORTABLE_TYPES.has(response.type) && !recordedKeys.messageIds.has(response.messageId)) {
+        recordedKeys.messageIds.add(response.messageId);
+        replyRows.push(buildReplyRecord(record, response, planned.status));
+      }
       if (planned.action === 'OPT_OUT') summary.optOuts += 1;
       else summary.replies += 1;
     } catch (error) {
@@ -554,8 +639,23 @@ export async function runReplyScan(
   await updateManyLeadCells(accessToken, writes);
   await appendLogRows(accessToken, logs);
 
+  let reportNote = '';
+  if (replyRows.length) {
+    // Oldest first, so the tab reads chronologically.
+    replyRows.sort((a, b) => a.repliedAt.getTime() - b.repliedAt.getTime());
+    try {
+      summary.recorded = await appendReplyRows(accessToken, replyRows);
+      reportNote = ` ${summary.recorded} row(s) added to the ${CONFIG.SHEETS.REPLIES_NAME} tab.`;
+    } catch (error) {
+      reportNote = ` The ${CONFIG.SHEETS.REPLIES_NAME} tab could not be written: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`;
+    }
+  }
+
   summary.message =
     `${summary.processed} thread(s) checked, ${summary.replies} reply/replies recorded, ` +
-    `${summary.optOuts} opt-out(s) suppressed, ${summary.errors} error(s).`;
+    `${summary.optOuts} opt-out(s) suppressed, ${summary.errors} error(s).` +
+    reportNote;
   return summary;
 }

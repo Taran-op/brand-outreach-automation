@@ -39,6 +39,7 @@ export async function POST(request: Request) {
         skipped: 0,
         replies: scan.replies + scan.optOuts,
         errors: scan.errors,
+        recorded: scan.recorded,
         message: scan.message
       });
     }

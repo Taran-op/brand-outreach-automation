@@ -13,6 +13,7 @@ type Lead = {
 };
 
 type LogItem = { timestamp: string; company: string; email: string; action: string; result: string; message: string };
+type ReplyItem = { repliedAt: string; company: string; from: string; type: string; subject: string; snippet: string; thread: string };
 type Bootstrap = {
   generatedAt: string; ownerEmail: string; title: string;
   event: { name: string; date: string; location: string; organization: string };
@@ -24,6 +25,7 @@ type Bootstrap = {
   metrics: { total: number; approved: number; approvedReady: number; dueFollowUps: number; replied: number; interested: number };
   statuses: string[]; categories: string[]; statusCounts: Record<string, number>;
   leads: Lead[]; truncated: boolean; logs: LogItem[]; spreadsheetUrl: string;
+  replies: { tab: string; items: ReplyItem[] };
 };
 
 type Preview = { action: string; to: string; cc: string[]; subject: string; body: string; warnings: string[] };
@@ -133,6 +135,15 @@ const statusTone = (status: string) => {
   if (['APPROVED','SENT','FOLLOW_UP_1','FOLLOW_UP_2'].includes(status)) return 'info';
   if (['DO_NOT_CONTACT','NOT_INTERESTED','REVIEW_REQUIRED'].includes(status)) return 'danger';
   if (status === 'REPLIED') return 'violet';
+  return 'muted';
+};
+
+/** A human reply is the good news; an opt-out or a bounce is not. */
+const replyTone = (type: string) => {
+  const label = type.toLowerCase();
+  if (label.startsWith('reply')) return 'violet';
+  if (label.startsWith('opt')) return 'danger';
+  if (label.startsWith('bounce')) return 'danger';
   return 'muted';
 };
 
@@ -340,6 +351,28 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
+  const downloadReplies = async () => {
+    try {
+      await run('replies-export', async () => {
+        const response = await fetch('/api/console/replies/export', { cache: 'no-store' });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error((payload as { error?: string } | null)?.error || `Export failed (${response.status}).`);
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `asaiverse-replies-${new Date().toISOString().slice(0, 10)}.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      });
+      setNotice('Replies workbook downloaded.');
+    } catch { /* surfaced globally */ }
+  };
+
   const verifyRouting = async () => {
     try {
       const result = await run('routing', () => callServer<{ message: string }>('uiVerifyRouting'));
@@ -415,7 +448,7 @@ function App() {
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark">A</div><div><strong>ASAIVERSE</strong><span>OUTREACH OPS</span></div></div>
-      <nav aria-label="Primary"><a className="active" href="#overview"><Icon name="activity"/>Overview</a><a href="#leads"><Icon name="users"/>Lead control</a><a href="#activity"><Icon name="mail"/>Activity log</a></nav>
+      <nav aria-label="Primary"><a className="active" href="#overview"><Icon name="activity"/>Overview</a><a href="#leads"><Icon name="users"/>Lead control</a><a href="#replies"><Icon name="mail"/>Replies</a><a href="#activity"><Icon name="activity"/>Activity log</a></nav>
       <div className="sidebar-foot"><span className="eyebrow">Signed in</span><strong>{data?.ownerEmail || '—'}</strong><a href={data?.spreadsheetUrl} target="_blank" rel="noreferrer">Open source Sheet <Icon name="external" size={14}/></a></div>
     </aside>
 
@@ -459,6 +492,29 @@ function App() {
         </div>
 
         <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Research, approve, send in one pass</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
+      </section>
+
+      <section id="replies" className="panel replies-panel">
+        <div className="panel-head">
+          <div><span className="eyebrow">WHO ANSWERED</span><h2>Replies</h2></div>
+          <div className="head-actions">
+            <a className="secondary link-button" href={data?.spreadsheetUrl || '#'} target="_blank" rel="noreferrer"><Icon name="external" size={15}/>Open in Sheets</a>
+            <button className="primary" disabled={!!busy || !data?.replies?.items.length} onClick={downloadReplies}><Icon name="upload"/>Download .xlsx</button>
+          </div>
+        </div>
+        <div className="reply-list">
+          {data?.replies?.items.map((item, i) => <article key={`${item.repliedAt}-${i}`}>
+            <div className="reply-head">
+              <strong>{item.company || item.from || 'Unknown company'}</strong>
+              <span className={`status ${replyTone(item.type)}`}>{item.type || 'Reply'}</span>
+              <small>{formatDate(item.repliedAt)}</small>
+            </div>
+            {item.subject && <p className="reply-subject">{item.subject}</p>}
+            <p className="reply-snippet">{item.snippet || 'No text captured — open the thread to read it.'}</p>
+            <small className="reply-foot">{item.from}{item.thread && <> · <a href={item.thread} target="_blank" rel="noreferrer">Open thread</a></>}</small>
+          </article>)}
+          {!data?.replies?.items.length && <p className="empty">No replies recorded yet. Every answer a brand sends is written to the {data?.replies?.tab || 'Replies'} tab when you run a reply check.</p>}
+        </div>
       </section>
 
       <section id="activity" className="panel activity-panel"><div className="panel-head"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Recent activity</h2></div><span className="muted-text">Latest {data?.logs.length || 0} events</span></div><div className="activity-list">{data?.logs.map((item, i) => <article key={`${item.timestamp}-${i}`}><span className={`activity-dot ${statusTone(item.result)}`}/><div><strong>{item.action} · {item.result}</strong><p>{item.message}</p><small>{item.company || item.email || 'System'} · {formatDate(item.timestamp)}</small></div></article>)}{!data?.logs.length && <p className="empty">No log entries yet.</p>}</div></section>
