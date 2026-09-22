@@ -37,7 +37,8 @@ export async function GET() {
       from: replyCell(row, 'Replied From'),
       type: replyCell(row, 'Response Type'),
       subject: replyCell(row, 'Subject'),
-      snippet: replyCell(row, 'Reply Snippet'),
+      text: replyCell(row, 'Reply Text') || replyCell(row, 'Reply Snippet'),
+      replyNumber: replyCell(row, 'Reply #'),
       thread: replyCell(row, 'Thread')
     }));
 

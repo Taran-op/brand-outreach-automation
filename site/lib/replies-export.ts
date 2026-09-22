@@ -7,14 +7,15 @@
 import writeXlsxFile from 'write-excel-file/node';
 
 import { CONFIG } from './config';
+import { REPLY_TEXT_HEADER } from './constants';
 
 /** Timestamps are stored as UTC and read by people working in IST. */
 const IST_OFFSET_MINUTES = 5.5 * 60;
 const DATE_COLUMNS = new Set(['Replied At', 'Initial Sent At']);
 
-/** Wide enough for a company or an address; the snippet column gets more. */
+/** Wide enough for a company or an address; the reply text gets more. */
 const columnWidth = (header: string): number => {
-  if (header === 'Reply Snippet') return 70;
+  if (header === REPLY_TEXT_HEADER) return 70;
   if (header === 'Subject' || header === 'Thread') return 40;
   if (header.endsWith('Email') || header === 'Replied From' || header === 'Website') return 30;
   return 20;
@@ -46,8 +47,10 @@ export async function repliesWorkbook(headers: string[], rows: string[][]): Prom
       row.map((cell, index) => {
         const header = headers[index];
         if (DATE_COLUMNS.has(header) && cell) return dateCell(cell);
-        if (header === 'Days To Reply' && /^\d+$/.test(cell)) return { value: Number(cell), type: Number };
-        return { value: cell, wrap: header === 'Reply Snippet' };
+        if ((header === 'Days To Reply' || header === 'Reply #') && /^\d+$/.test(cell)) {
+          return { value: Number(cell), type: Number };
+        }
+        return { value: cell, wrap: header === REPLY_TEXT_HEADER };
       })
     )
   ];

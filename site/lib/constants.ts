@@ -123,8 +123,9 @@ export const REPLY_HEADERS = [
   'Category',
   'Website',
   'Response Type',
+  'Reply #',
   'Subject',
-  'Reply Snippet',
+  'Reply Text',
   'Initial Sent At',
   'Days To Reply',
   'Lead Status',
@@ -132,6 +133,9 @@ export const REPLY_HEADERS = [
   'Lead ID',
   'Message ID'
 ] as const;
+
+/** The column holding what the brand wrote, which needs the room. */
+export const REPLY_TEXT_HEADER = 'Reply Text';
 
 /** What a detected response is called in the Replies tab. */
 export const RESPONSE_TYPE_LABELS: Record<string, string> = {

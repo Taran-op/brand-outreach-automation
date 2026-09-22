@@ -11,7 +11,12 @@
 .reply-head strong{font-size:13px}
 .reply-head small{margin-left:auto;color:#6f849e;font-size:11px}
 .reply-subject{margin:0;font-size:12px;font-weight:650;color:#c3d0e4}
-.reply-snippet{margin:0;font-size:12px;line-height:1.55;color:#8da0b8;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.reply-text{margin:0;font-size:12px;line-height:1.55;color:#8da0b8;white-space:pre-wrap;overflow-wrap:anywhere}
+details.reply-text summary{cursor:pointer;list-style:none;color:#8da0b8}
+details.reply-text summary::-webkit-details-marker{display:none}
+details.reply-text summary::after{content:" Show more";color:#9ea9ff;font-weight:650}
+details.reply-text[open] summary{display:none}
+details.reply-text p{margin:0;white-space:pre-wrap}
 .reply-foot{color:#6f849e;font-size:11px;overflow-wrap:anywhere}
 .reply-foot a{color:#9ea9ff;text-decoration:none}
 .link-button{text-decoration:none;color:#9fb0c6;border:1px solid #22364f;background:#0e1c2e}

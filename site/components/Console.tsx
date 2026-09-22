@@ -13,7 +13,7 @@ type Lead = {
 };
 
 type LogItem = { timestamp: string; company: string; email: string; action: string; result: string; message: string };
-type ReplyItem = { repliedAt: string; company: string; from: string; type: string; subject: string; snippet: string; thread: string };
+type ReplyItem = { repliedAt: string; company: string; from: string; type: string; replyNumber: string; subject: string; text: string; thread: string };
 type Bootstrap = {
   generatedAt: string; ownerEmail: string; title: string;
   event: { name: string; date: string; location: string; organization: string };
@@ -510,8 +510,12 @@ function App() {
               <small>{formatDate(item.repliedAt)}</small>
             </div>
             {item.subject && <p className="reply-subject">{item.subject}</p>}
-            <p className="reply-snippet">{item.snippet || 'No text captured — open the thread to read it.'}</p>
-            <small className="reply-foot">{item.from}{item.thread && <> · <a href={item.thread} target="_blank" rel="noreferrer">Open thread</a></>}</small>
+            {/* The whole reply is here, so a long one is behind a summary
+                rather than cut off where it stops being readable. */}
+            {item.text.length > 320
+              ? <details className="reply-text"><summary>{item.text.slice(0, 300)}…</summary><p>{item.text}</p></details>
+              : <p className="reply-text">{item.text || 'No text captured — open the thread to read it.'}</p>}
+            <small className="reply-foot">{item.from}{item.replyNumber && Number(item.replyNumber) > 1 ? ` · message ${item.replyNumber} in this thread` : ''}{item.thread && <> · <a href={item.thread} target="_blank" rel="noreferrer">Open thread</a></>}</small>
           </article>)}
           {!data?.replies?.items.length && <p className="empty">No replies recorded yet. Every answer a brand sends is written to the {data?.replies?.tab || 'Replies'} tab when you run a reply check.</p>}
         </div>

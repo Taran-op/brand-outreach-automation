@@ -210,12 +210,25 @@ export type DetectedResponse = {
   receivedAt: Date;
   /** For the Replies report. Never read by anything that decides a send. */
   subject: string;
-  /** The top, unquoted text only — the same portion the classifier reads. */
-  snippet: string;
+  /** The top, unquoted text — what they wrote, without the quoted history. */
+  text: string;
+  /** Which message this is among the brand's messages in the thread, from 1. */
+  replyNumber: number;
 };
 
-/** How much of a reply the report keeps; the full message stays in the mailbox. */
-const SNIPPET_LENGTH = 900;
+/**
+ * Everything a thread contains: every message the brand sent, and the single
+ * one that decides what happens to the lead row.
+ */
+/** A Sheets cell holds far more, and the extractor already stops at 5 000. */
+const MAX_REPLY_TEXT = 5000;
+
+export type ThreadScan = {
+  /** Opt-out outranks everything, because suppression must never lose. */
+  primary: DetectedResponse | null;
+  /** Every inbound message from the brand, oldest first. */
+  inbound: DetectedResponse[];
+};
 
 /**
  * One shape for a message from either mailbox, so the classifier below does
@@ -254,15 +267,18 @@ const fromHostinger = (message: InboundMessage, threadId: string): Inbound => ({
 
 /**
  * Inspects everything that answered our outreach — the Gmail thread, which
- * holds what we sent, and the Hostinger mailbox, which holds what came back —
- * and returns the single most important thing that happened. Opt-out outranks
- * everything, because suppression must never lose to a friendlier signal.
+ * holds what we sent, and the Hostinger mailbox, which holds what came back.
+ *
+ * Returns both views of it: every message the brand sent, for the report,
+ * and the single most important one, for the lead row. They are different
+ * questions — three friendly replies and one "unsubscribe" is four rows in
+ * the report but exactly one decision on the row.
  */
-export async function detectThreadResponse(
+export async function scanThread(
   accessToken: string,
   record: LeadRecord,
   ownAddresses: Set<string>
-): Promise<DetectedResponse | null> {
+): Promise<ThreadScan> {
   const campaignId = safeDisplayText(leadValue(record, LEAD_HEADERS.CAMPAIGN_ID));
   if (campaignId !== CONFIG.CAMPAIGN_ID) {
     throw new Error('Stored Campaign ID does not match CONFIG.CAMPAIGN_ID; reply scan refused.');
@@ -318,10 +334,7 @@ export async function detectThreadResponse(
   inbound.sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
   const initialAt = inbound.find((m) => m.id === initialMessageId)?.receivedAt.getTime() ?? 0;
 
-  let humanReply: DetectedResponse | null = null;
-  let optOut: DetectedResponse | null = null;
-  let bounce: DetectedResponse | null = null;
-  let autoReply: DetectedResponse | null = null;
+  const fromBrand: DetectedResponse[] = [];
   let manualOutbound: DetectedResponse | null = null;
 
   for (const message of inbound) {
@@ -336,13 +349,16 @@ export async function detectThreadResponse(
       from: fromAddresses[0] || '',
       receivedAt: message.receivedAt,
       subject: decodeRfc2047Header(message.header('Subject')),
-      snippet: ''
+      text: '',
+      replyNumber: 0
     };
 
     if (message.isOurs) {
       // Something we sent that is not a recorded automated send means a human
       // has stepped into the thread and automation should stand down.
-      if (!knownSent.has(message.id) && !manualOutbound) manualOutbound = { type: 'MANUAL_OUTBOUND', ...base };
+      if (!knownSent.has(message.id) && !manualOutbound) {
+        manualOutbound = { type: 'MANUAL_OUTBOUND', ...base, replyNumber: 0 };
+      }
       continue;
     }
 
@@ -350,24 +366,41 @@ export async function detectThreadResponse(
     if (!fromAddresses.length || fromAddresses.every((email) => ownAddresses.has(email))) continue;
 
     const topText = getTopUnquotedText(message.plainText());
-    const withText = { ...base, snippet: truncate(safeDisplayText(topText), SNIPPET_LENGTH) };
+    const withText = {
+      ...base,
+      text: truncate(String(topText || '').trim(), MAX_REPLY_TEXT),
+      replyNumber: fromBrand.length + 1
+    };
 
     if (isBounce(message.header)) {
-      if (!bounce) bounce = { type: 'BOUNCE', ...withText };
+      fromBrand.push({ type: 'BOUNCE', ...withText });
       continue;
     }
     if (isAutomated(message.header)) {
-      if (!autoReply) autoReply = { type: 'AUTO_REPLY', ...withText };
+      fromBrand.push({ type: 'AUTO_REPLY', ...withText });
       continue;
     }
     if (containsStrongOptOut(topText)) {
-      if (!optOut) optOut = { type: 'OPT_OUT', ...withText };
+      fromBrand.push({ type: 'OPT_OUT', ...withText });
       continue;
     }
-    if (!humanReply) humanReply = { type: 'REPLY', ...withText };
+    fromBrand.push({ type: 'REPLY', ...withText });
   }
 
-  return optOut || humanReply || manualOutbound || bounce || autoReply || null;
+  const first = (type: DetectedResponse['type']) => fromBrand.find((entry) => entry.type === type) || null;
+  const primary =
+    first('OPT_OUT') || first('REPLY') || manualOutbound || first('BOUNCE') || first('AUTO_REPLY') || null;
+
+  return { primary, inbound: fromBrand };
+}
+
+/** The decisive response alone, for callers that only act on the lead row. */
+export async function detectThreadResponse(
+  accessToken: string,
+  record: LeadRecord,
+  ownAddresses: Set<string>
+): Promise<DetectedResponse | null> {
+  return (await scanThread(accessToken, record, ownAddresses)).primary;
 }
 
 /** Rows worth scanning. Pending sends are excluded so an unrecorded automated
@@ -555,7 +588,7 @@ function historicReplyRecords(records: LeadRecord[], recorded: RecordedKeys): Re
           from: normalizeEmail(leadValue(record, LEAD_HEADERS.SENT_TO_EMAIL)) || normalizeEmail(leadValue(record, LEAD_HEADERS.EMAIL)),
           receivedAt: Number.isNaN(repliedAt.getTime()) ? new Date() : repliedAt,
           subject: '',
-          snippet: 'Recorded from the lead history — this reply arrived before the Replies tab existed, so open the thread to read it.',
+          text: 'Recorded from the lead history — this reply arrived before the Replies tab existed, so open the thread to read what they wrote.',
           threadId: safeDisplayText(leadValue(record, LEAD_HEADERS.GMAIL_THREAD_ID)),
           messageId: key
         },
@@ -609,17 +642,23 @@ export async function runReplyScan(
     if (Date.now() >= deadline) break;
     summary.processed += 1;
     try {
-      const response = await detectThreadResponse(accessToken, record, ownAddresses);
-      if (!response) {
+      const { primary, inbound } = await scanThread(accessToken, record, ownAddresses);
+      if (!primary) {
         writes.push({ record, updates: [{ header: LEAD_HEADERS.LAST_REPLY_CHECK_AT, value: checkedAt }] });
         continue;
       }
-      const planned = planDetectedResponse(record, response);
+      const planned = planDetectedResponse(record, primary);
       writes.push(planned.write);
       logs.push(planned.log);
-      if (reportable && REPORTABLE_TYPES.has(response.type) && !recordedKeys.messageIds.has(response.messageId)) {
-        recordedKeys.messageIds.add(response.messageId);
-        replyRows.push(buildReplyRecord(record, response, planned.status));
+      // Every message the brand sent is reported, not just the one that
+      // decided the row: a "yes, send the deck" that arrives after an
+      // out-of-office is exactly what the operator came here to read.
+      if (reportable) {
+        for (const message of inbound) {
+          if (!REPORTABLE_TYPES.has(message.type) || recordedKeys.messageIds.has(message.messageId)) continue;
+          recordedKeys.messageIds.add(message.messageId);
+          replyRows.push(buildReplyRecord(record, message, planned.status));
+        }
       }
       if (planned.action === 'OPT_OUT') summary.optOuts += 1;
       else summary.replies += 1;

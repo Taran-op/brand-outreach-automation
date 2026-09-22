@@ -11,17 +11,21 @@
  */
 
 import { CONFIG, spreadsheetId } from './config';
-import { LEAD_HEADERS, REPLY_HEADERS, RESPONSE_TYPE_LABELS } from './constants';
+import { LEAD_HEADERS, REPLY_HEADERS, REPLY_TEXT_HEADER, RESPONSE_TYPE_LABELS } from './constants';
 import { leadValue, SheetsError, type LeadRecord } from './sheets';
 import { columnLetter } from './sheets-write';
-import { normalizeEmail, safeDisplayText, safeSheetText, truncate } from './text';
+import { normalizeEmail, safeDisplayText, safeSheetText, sanitizeUiMultilineText, truncate } from './text';
 
 const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
 const quoteSheet = (name: string) => `'${name.replace(/'/g, "''")}'`;
 const TAB = () => CONFIG.SHEETS.REPLIES_NAME;
 
-/** The reply text kept for the report; the full message stays in the mailbox. */
-const MAX_SNIPPET = 900;
+/**
+ * A Sheets cell holds 50 000 characters. The detector already stops at 5 000
+ * of unquoted text, which is far more than a brand's reply, so this is only a
+ * backstop against a pathological message.
+ */
+const MAX_REPLY_TEXT = 5000;
 
 async function api<T>(path: string, init: RequestInit, accessToken: string): Promise<T> {
   const response = await fetch(`${SHEETS_API}/${encodeURIComponent(spreadsheetId())}${path}`, {
@@ -46,14 +50,20 @@ async function api<T>(path: string, init: RequestInit, accessToken: string): Pro
   return (await response.json()) as T;
 }
 
-/** Creates the tab with its header row the first time a reply is recorded. */
-async function ensureRepliesSheet(accessToken: string): Promise<void> {
+/**
+ * Creates the tab the first time a reply is recorded, and returns the column
+ * order to write in — the tab's own, so a tab an earlier version created
+ * keeps its rows and simply gains any column it is missing.
+ */
+async function ensureRepliesSheet(accessToken: string): Promise<string[]> {
   const meta = await api<{ sheets?: { properties?: { title?: string; sheetId?: number } }[] }>(
     '?fields=sheets.properties(title,sheetId)',
     { method: 'GET' },
     accessToken
   );
-  if ((meta.sheets || []).some((sheet) => sheet.properties?.title === TAB())) return;
+  if ((meta.sheets || []).some((sheet) => sheet.properties?.title === TAB())) {
+    return reconcileHeaders(accessToken);
+  }
 
   const created = await api<{ replies?: { addSheet?: { properties?: { sheetId?: number } } }[] }>(
     ':batchUpdate',
@@ -75,14 +85,10 @@ async function ensureRepliesSheet(accessToken: string): Promise<void> {
     accessToken
   );
 
-  await api(
-    `/values/${encodeURIComponent(`${quoteSheet(TAB())}!A1`)}?valueInputOption=RAW`,
-    { method: 'PUT', body: JSON.stringify({ values: [[...REPLY_HEADERS]] }) },
-    accessToken
-  );
+  await writeHeaderRow(accessToken, [...REPLY_HEADERS]);
 
   const sheetId = created.replies?.[0]?.addSheet?.properties?.sheetId;
-  if (sheetId === undefined) return;
+  if (sheetId === undefined) return [...REPLY_HEADERS];
   // Cosmetic only, and never worth failing a reply record over.
   try {
     await api(
@@ -113,6 +119,40 @@ async function ensureRepliesSheet(accessToken: string): Promise<void> {
   } catch {
     // Formatting is decoration; the data is what matters.
   }
+  return [...REPLY_HEADERS];
+}
+
+/**
+ * The existing tab's header row, extended with any column this version adds.
+ * Extending rather than rewriting keeps every row already recorded readable,
+ * and keeps a column an operator added by hand.
+ */
+async function reconcileHeaders(accessToken: string): Promise<string[]> {
+  const body = await api<{ values?: unknown[][] }>(
+    `/values/${encodeURIComponent(`${quoteSheet(TAB())}!1:1`)}`,
+    { method: 'GET' },
+    accessToken
+  );
+  const current = (body.values?.[0] || []).map((cell) => safeDisplayText(cell));
+  if (!current.some(Boolean)) {
+    await writeHeaderRow(accessToken, [...REPLY_HEADERS]);
+    return [...REPLY_HEADERS];
+  }
+
+  const missing = REPLY_HEADERS.filter((header) => !current.includes(header));
+  if (!missing.length) return current;
+
+  const extended = [...current, ...missing];
+  await writeHeaderRow(accessToken, extended);
+  return extended;
+}
+
+async function writeHeaderRow(accessToken: string, headers: string[]): Promise<void> {
+  await api(
+    `/values/${encodeURIComponent(`${quoteSheet(TAB())}!A1`)}?valueInputOption=RAW`,
+    { method: 'PUT', body: JSON.stringify({ values: [headers] }) },
+    accessToken
+  );
 }
 
 export type RecordedKeys = {
@@ -127,19 +167,24 @@ export type RecordedKeys = {
  * recorded yet.
  */
 export async function recordedReplyKeys(accessToken: string): Promise<RecordedKeys> {
-  const first = columnLetter(REPLY_HEADERS.indexOf('Lead ID') + 1);
-  const last = columnLetter(REPLY_HEADERS.indexOf('Message ID') + 1);
   const empty: RecordedKeys = { messageIds: new Set(), leadIds: new Set() };
   try {
     const body = await api<{ values?: unknown[][] }>(
-      `/values/${encodeURIComponent(`${quoteSheet(TAB())}!${first}2:${last}`)}`,
+      `/values/${encodeURIComponent(`${quoteSheet(TAB())}!A1:${columnLetter(REPLY_HEADERS.length + 10)}`)}`,
       { method: 'GET' },
       accessToken
     );
+    const values = body.values || [];
+    if (!values.length) return empty;
+
+    const headers = values[0].map((cell) => safeDisplayText(cell));
+    const leadColumn = headers.indexOf('Lead ID');
+    const messageColumn = headers.indexOf('Message ID');
+
     const keys: RecordedKeys = { messageIds: new Set(), leadIds: new Set() };
-    for (const row of body.values || []) {
-      const leadId = safeDisplayText(row[0]);
-      const messageId = safeDisplayText(row[1]);
+    for (const row of values.slice(1)) {
+      const leadId = leadColumn >= 0 ? safeDisplayText(row[leadColumn]) : '';
+      const messageId = messageColumn >= 0 ? safeDisplayText(row[messageColumn]) : '';
       if (leadId) keys.leadIds.add(leadId);
       if (messageId) keys.messageIds.add(messageId);
     }
@@ -159,8 +204,9 @@ export type ReplyRecord = {
   category: string;
   website: string;
   responseType: string;
+  replyNumber: number;
   subject: string;
-  snippet: string;
+  text: string;
   initialSentAt: string;
   leadStatus: string;
   threadId: string;
@@ -175,24 +221,35 @@ const dayGap = (from: string, to: Date): string => {
   return days >= 0 ? String(days) : '';
 };
 
-const replyRow = (entry: ReplyRecord): unknown[] => [
-  entry.repliedAt.toISOString(),
-  safeSheetText(safeDisplayText(entry.company)),
-  safeSheetText(safeDisplayText(entry.contactName)),
-  safeSheetText(normalizeEmail(entry.repliedFrom)),
-  safeSheetText(normalizeEmail(entry.leadEmail)),
-  safeSheetText(safeDisplayText(entry.category)),
-  safeSheetText(safeDisplayText(entry.website)),
-  RESPONSE_TYPE_LABELS[entry.responseType] || safeDisplayText(entry.responseType),
-  safeSheetText(truncate(safeDisplayText(entry.subject), 300)),
-  safeSheetText(truncate(safeDisplayText(entry.snippet), MAX_SNIPPET)),
-  safeDisplayText(entry.initialSentAt),
-  dayGap(entry.initialSentAt, entry.repliedAt),
-  safeDisplayText(entry.leadStatus),
-  entry.threadId ? `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(entry.threadId)}` : '',
-  safeSheetText(safeDisplayText(entry.leadId)),
-  safeSheetText(safeDisplayText(entry.messageId))
-];
+/**
+ * The reply as the tab's columns want it. The reply text keeps its line
+ * breaks — it is what a person came here to read — while every other field
+ * is flattened to a single line.
+ */
+const replyFields = (entry: ReplyRecord): Record<string, unknown> => ({
+  'Replied At': entry.repliedAt.toISOString(),
+  Company: safeSheetText(safeDisplayText(entry.company)),
+  'Contact Name': safeSheetText(safeDisplayText(entry.contactName)),
+  'Replied From': safeSheetText(normalizeEmail(entry.repliedFrom)),
+  'Lead Email': safeSheetText(normalizeEmail(entry.leadEmail)),
+  Category: safeSheetText(safeDisplayText(entry.category)),
+  Website: safeSheetText(safeDisplayText(entry.website)),
+  'Response Type': RESPONSE_TYPE_LABELS[entry.responseType] || safeDisplayText(entry.responseType),
+  'Reply #': entry.replyNumber || '',
+  Subject: safeSheetText(truncate(safeDisplayText(entry.subject), 300)),
+  [REPLY_TEXT_HEADER]: safeSheetText(truncate(sanitizeUiMultilineText(entry.text, MAX_REPLY_TEXT), MAX_REPLY_TEXT)),
+  'Initial Sent At': safeDisplayText(entry.initialSentAt),
+  'Days To Reply': dayGap(entry.initialSentAt, entry.repliedAt),
+  'Lead Status': safeDisplayText(entry.leadStatus),
+  Thread: entry.threadId ? `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(entry.threadId)}` : '',
+  'Lead ID': safeSheetText(safeDisplayText(entry.leadId)),
+  'Message ID': safeSheetText(safeDisplayText(entry.messageId))
+});
+
+const replyRow = (entry: ReplyRecord, headers: string[]): unknown[] => {
+  const fields = replyFields(entry);
+  return headers.map((header) => (header in fields ? fields[header] : ''));
+};
 
 /**
  * Appends reply rows in one request. A failure here is reported to the
@@ -201,10 +258,10 @@ const replyRow = (entry: ReplyRecord): unknown[] => [
  */
 export async function appendReplyRows(accessToken: string, entries: ReplyRecord[]): Promise<number> {
   if (!entries.length) return 0;
-  await ensureRepliesSheet(accessToken);
+  const headers = await ensureRepliesSheet(accessToken);
   await api(
     `/values/${encodeURIComponent(`${quoteSheet(TAB())}!A1`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    { method: 'POST', body: JSON.stringify({ values: entries.map(replyRow) }) },
+    { method: 'POST', body: JSON.stringify({ values: entries.map((entry) => replyRow(entry, headers)) }) },
     accessToken
   );
   return entries.length;
@@ -248,7 +305,8 @@ export function buildReplyRecord(
     from: string;
     receivedAt: Date;
     subject: string;
-    snippet: string;
+    text: string;
+    replyNumber?: number;
     threadId: string;
     messageId: string;
   },
@@ -264,8 +322,9 @@ export function buildReplyRecord(
     category: value(LEAD_HEADERS.CATEGORY),
     website: value(LEAD_HEADERS.WEBSITE),
     responseType: detected.type,
+    replyNumber: detected.replyNumber || 0,
     subject: detected.subject,
-    snippet: detected.snippet,
+    text: detected.text,
     initialSentAt: value(LEAD_HEADERS.INITIAL_SENT_AT),
     leadStatus,
     threadId: detected.threadId,
