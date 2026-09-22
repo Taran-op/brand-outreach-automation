@@ -267,6 +267,66 @@ export async function appendReplyRows(accessToken: string, entries: ReplyRecord[
   return entries.length;
 }
 
+/**
+ * Removes rows an earlier version wrote from the lead history alone: a
+ * company, a date and a response type, but not a word of what the brand
+ * actually said. Worse than useless, because such a row holds the real
+ * message's key and so keeps the real message out of the report. Deleting
+ * them lets the scan re-read those threads and record what was written.
+ */
+export async function purgePlaceholderRows(accessToken: string, prefix: string): Promise<number> {
+  let values: unknown[][];
+  let sheetId: number | undefined;
+  try {
+    const body = await api<{ values?: unknown[][] }>(
+      `/values/${encodeURIComponent(`${quoteSheet(TAB())}!A1:${columnLetter(REPLY_HEADERS.length + 10)}`)}`,
+      { method: 'GET' },
+      accessToken
+    );
+    values = body.values || [];
+    if (values.length < 2) return 0;
+
+    const meta = await api<{ sheets?: { properties?: { title?: string; sheetId?: number } }[] }>(
+      '?fields=sheets.properties(title,sheetId)',
+      { method: 'GET' },
+      accessToken
+    );
+    sheetId = (meta.sheets || []).find((sheet) => sheet.properties?.title === TAB())?.properties?.sheetId;
+  } catch (error) {
+    if (error instanceof SheetsError && (error.status === 400 || error.status === 404)) return 0;
+    throw error;
+  }
+  if (sheetId === undefined) return 0;
+
+  const headers = values[0].map((cell) => safeDisplayText(cell));
+  // The column was called Reply Snippet before it held the whole message.
+  const textColumn = [REPLY_TEXT_HEADER, 'Reply Snippet'].map((name) => headers.indexOf(name)).find((index) => index >= 0);
+  if (textColumn === undefined || textColumn < 0) return 0;
+
+  const rowNumbers: number[] = [];
+  values.slice(1).forEach((row, index) => {
+    if (safeDisplayText(row[textColumn]).startsWith(prefix)) rowNumbers.push(index + 2);
+  });
+  if (!rowNumbers.length) return 0;
+
+  // Highest first, so each earlier index is still valid when its turn comes.
+  await api(
+    ':batchUpdate',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        requests: rowNumbers
+          .sort((a, b) => b - a)
+          .map((row) => ({
+            deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: row - 1, endIndex: row } }
+          }))
+      })
+    },
+    accessToken
+  );
+  return rowNumbers.length;
+}
+
 /** Everything recorded so far, newest first, for the console and the export. */
 export async function getReplyRows(
   accessToken: string,
