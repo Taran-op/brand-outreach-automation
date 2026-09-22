@@ -1,5 +1,6 @@
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import readWorkbook from 'read-excel-file/universal';
 import './styles.css';
 
 type Lead = {
@@ -16,6 +17,7 @@ type Bootstrap = {
   generatedAt: string; ownerEmail: string; title: string;
   event: { name: string; date: string; location: string; organization: string };
   sender: { from: string; replyTo: string; cc: string[] };
+  imports: { maxRows: number; maxFileBytes: number };
   safety: { mode: string; sendsEnabled: boolean; dryRun: boolean; testMode: boolean; systemDisabled: boolean;
     dailyLimit: number; sentToday: number; remainingToday: number; triggerCount: number;
     configurationErrors: string[]; configurationWarnings: string[] };
@@ -27,6 +29,9 @@ type Bootstrap = {
 type Preview = { action: string; to: string; cc: string[]; subject: string; body: string; warnings: string[] };
 type JobSummary = { job: string; mode: string; processed: number; sent: number; dryRun: number; testSent: number;
   skipped: number; replies: number; errors: number; message: string; stoppedForLimit?: boolean; lockedOut?: boolean };
+type ImportResult = { imported: number; withoutEmail: number; skipped: { row: number; value: string; reason: string }[] };
+type WorkbookSheet = { name: string; rows: string[][] };
+type WorkbookUpload = { fileName: string; fileBytes: number; sheets: WorkbookSheet[] };
 
 declare global {
   interface Window { google?: { script?: { run?: GoogleRunner } } }
@@ -51,6 +56,7 @@ const mockBootstrap: Bootstrap = {
   generatedAt: new Date().toISOString(), ownerEmail: 'taran.devx@gmail.com', title: 'Brand Outreach Console',
   event: { name: 'AsaiVerse', date: 'January 2027', location: 'India', organization: '' },
   sender: { from: 'taran@asaiverse.com', replyTo: 'taran@asaiverse.com', cc: ['ashish@asaiverse.com', 'gaurav@asaiverse.com'] },
+  imports: { maxRows: 500, maxFileBytes: 5 * 1024 * 1024 },
   safety: { mode: 'DRY_RUN', sendsEnabled: false, dryRun: true, testMode: true, systemDisabled: false,
     dailyLimit: 20, sentToday: 0, remainingToday: 20, triggerCount: 0, configurationErrors: [],
     configurationWarnings: ['EVENT.NAME still contains a placeholder.', 'EVENT.ORGANIZATION still contains a placeholder.'] },
@@ -85,6 +91,7 @@ async function mockCall<T>(name: string, args: unknown[]): Promise<T> {
   } as T;
   if (name === 'uiRunJob') return { job: String(args[0]), mode: 'DRY_RUN', processed: 1, sent: 0, dryRun: 1, testSent: 0, skipped: 0, replies: 0, errors: 0, message: 'Local preview completed.' } as T;
   if (name === 'uiImportLeads') return { imported: 0, skipped: [{ row: 1, value: '', reason: 'Local preview does not change data' }] } as T;
+  if (name === 'uiImportWorkbook') return { imported: 0, withoutEmail: 0, skipped: [{ row: 1, value: '', reason: 'Local preview does not change data' }] } as T;
   if (name === 'uiBulkApprove') return { approved: [], rejected: [] } as T;
   if (name === 'uiSaveLead') return args[0] as T;
   if (name === 'uiEmergencyDisable') return { systemDisabled: true, deletedTriggers: 0, requestId: 'preview', warning: '' } as T;
@@ -120,6 +127,17 @@ const statusTone = (status: string) => {
 
 const formatDate = (value: string) => value ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
 
+const workbookCellToText = (cell: unknown) => {
+  if (cell === null || cell === undefined) return '';
+  if (cell instanceof Date) return cell.toISOString();
+  if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') return String(cell);
+  return '';
+};
+
+const formatFileSize = (bytes: number) => bytes < 1024 * 1024
+  ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+  : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [loading, setLoading] = useState(true);
@@ -133,6 +151,9 @@ function App() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [modal, setModal] = useState<'import'|'job'|'disable'|null>(null);
   const [importText, setImportText] = useState('');
+  const [workbookUpload, setWorkbookUpload] = useState<WorkbookUpload | null>(null);
+  const [workbookSheetName, setWorkbookSheetName] = useState('');
+  const [dragActive, setDragActive] = useState(false);
   const [pendingJob, setPendingJob] = useState('');
   const [confirmation, setConfirmation] = useState('');
 
@@ -178,12 +199,40 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
+  const loadWorkbookFile = async (file?: File) => {
+    if (!file) return;
+    try {
+      await run('xlsx', async () => {
+        if (!/\.xlsx$/i.test(file.name)) throw new Error('Choose an .xlsx workbook. Other file types are not accepted.');
+        const maxBytes = data?.imports.maxFileBytes || 5 * 1024 * 1024;
+        if (file.size > maxBytes) throw new Error(`Workbook is larger than the ${formatFileSize(maxBytes)} limit.`);
+        const parsedSheets = await readWorkbook(await file.arrayBuffer());
+        const sheets = parsedSheets.map((sheet) => ({
+          name: String(sheet.sheet || 'Sheet'),
+          rows: sheet.data.map((row) => row.map(workbookCellToText))
+            .filter((row) => row.some((cell) => cell.trim() !== ''))
+        })).filter((sheet) => sheet.rows.length > 0);
+        if (!sheets.length) throw new Error('The workbook does not contain a non-empty worksheet.');
+        setWorkbookUpload({ fileName: file.name, fileBytes: file.size, sheets });
+        setWorkbookSheetName(sheets[0].name);
+        setImportText('');
+      });
+    } catch { /* surfaced globally */ }
+  };
+
   const submitImport = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      const result = await run('import', () => callServer<{imported:number; skipped:{row:number;value:string;reason:string}[]}>('uiImportLeads', importText));
-      setNotice(`${result?.imported || 0} lead(s) imported as NEW; ${result?.skipped.length || 0} skipped. Nothing was approved or emailed.`);
-      setImportText(''); setModal(null); await refresh(true);
+      const selectedSheet = workbookUpload?.sheets.find((sheet) => sheet.name === workbookSheetName);
+      const result = await run('import', () => selectedSheet
+        ? callServer<ImportResult>('uiImportWorkbook', {
+            fileName: workbookUpload?.fileName,
+            sheetName: selectedSheet.name,
+            rows: selectedSheet.rows
+          })
+        : callServer<ImportResult>('uiImportLeads', importText));
+      setNotice(`${result?.imported || 0} lead(s) imported as NEW; ${result?.withoutEmail || 0} need email research; ${result?.skipped.length || 0} skipped. Nothing was approved or emailed.`);
+      setImportText(''); setWorkbookUpload(null); setWorkbookSheetName(''); setModal(null); await refresh(true);
     } catch { /* surfaced globally */ }
   };
 
@@ -218,6 +267,8 @@ function App() {
   const mode = data?.safety.mode || 'UNKNOWN';
   const configurationBlocked = !!data?.safety.configurationErrors.length;
   const jobsBlocked = !!busy || !!data?.safety.systemDisabled || (mode !== 'DRY_RUN' && configurationBlocked);
+  const selectedWorkbookSheet = workbookUpload?.sheets.find((sheet) => sheet.name === workbookSheetName) || null;
+  const workbookTooLarge = !!selectedWorkbookSheet && selectedWorkbookSheet.rows.length > (data?.imports.maxRows || 500) + 1;
   const modeLabel = data?.safety.systemDisabled ? 'SYSTEM DISABLED' : configurationBlocked && mode === 'LIVE' ? 'LIVE — CONFIGURATION BLOCKED' : mode === 'DRY_RUN' ? 'DRY RUN — DELIVERY LOCKED' : mode === 'LIVE' ? 'LIVE — MANUAL SENDS ENABLED' : mode;
   const jobPhrase = mode === 'LIVE' ? (pendingJob === 'INITIALS' ? 'SEND APPROVED' : pendingJob === 'FOLLOW_UPS' ? 'SEND FOLLOW UPS' : 'CHECK REPLIES') : mode === 'TEST' ? 'SEND TEST' : '';
 
@@ -258,7 +309,7 @@ function App() {
 
       <section className="workspace-grid">
         <div id="leads" className="panel leads-panel">
-          <div className="panel-head"><div><span className="eyebrow">APPROVAL QUEUE</span><h2>Lead control</h2></div><div className="head-actions"><button className="secondary" onClick={() => setModal('import')}><Icon name="upload"/>Import list</button><button className="primary" disabled={!selected.size || !!busy} onClick={approveSelected}><Icon name="check"/>Approve {selected.size || ''}</button></div></div>
+          <div className="panel-head"><div><span className="eyebrow">APPROVAL QUEUE</span><h2>Lead control</h2></div><div className="head-actions"><button className="secondary" onClick={() => setModal('import')}><Icon name="upload"/>Drop XLSX</button><button className="primary" disabled={!selected.size || !!busy} onClick={approveSelected}><Icon name="check"/>Approve {selected.size || ''}</button></div></div>
           <div className="filters"><label className="search"><Icon name="search"/><input aria-label="Search leads" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search company, email, category…"/></label><select aria-label="Filter by status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="ALL">All statuses</option>{data?.statuses.map((status) => <option key={status}>{status}</option>)}</select><span>{leads.length} shown</span></div>
           <div className="table-wrap"><table><thead><tr><th className="check-cell"><input aria-label="Select all visible" type="checkbox" checked={!!leads.length && leads.every((l) => selected.has(l.id))} onChange={(e) => { const next = new Set(selected); leads.forEach((l) => e.target.checked ? next.add(l.id) : next.delete(l.id)); setSelected(next); }}/></th><th>Company</th><th>Contact</th><th>Category</th><th>Status</th><th>Last activity</th><th aria-label="Actions"/></tr></thead><tbody>
             {leads.map((lead) => <tr key={lead.id} className={selected.has(lead.id) ? 'selected-row' : ''}><td className="check-cell"><input aria-label={`Select ${lead.company || lead.email}`} type="checkbox" checked={selected.has(lead.id)} onChange={(e) => { const next = new Set(selected); e.target.checked ? next.add(lead.id) : next.delete(lead.id); setSelected(next); }}/></td><td><button className="company-link" onClick={() => setDrawerLead(lead)}>{lead.company || <em>Company needed</em>}</button><small>{lead.email}</small></td><td>{lead.contactName || 'Team'}</td><td>{lead.category || 'Uncategorised'}</td><td><span className={`status ${statusTone(lead.status)}`}>{lead.status.replaceAll('_',' ')}</span>{lead.dueAction && <small className="due">{lead.dueAction.replaceAll('_',' ')} due</small>}</td><td>{formatDate(lead.updatedAt || lead.initialSentAt)}</td><td className="row-actions"><button title="Preview email" onClick={() => openPreview(lead)}><Icon name="mail"/></button><button title="Edit lead" onClick={() => setDrawerLead(lead)}><Icon name="edit"/></button></td></tr>)}
@@ -276,7 +327,7 @@ function App() {
 
     {preview && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Email preview"><div className="modal preview-modal"><div className="modal-head"><div><span className="eyebrow">NO MESSAGE SENT</span><h2>{preview.action.replaceAll('_',' ')} preview</h2></div><button onClick={() => setPreview(null)}><Icon name="close"/></button></div>{preview.warnings.length > 0 && <div className="preview-warning"><Icon name="alert"/><div>{preview.warnings.map((w) => <p key={w}>{w}</p>)}</div></div>}<dl><dt>To</dt><dd>{preview.to || '—'}</dd><dt>CC</dt><dd>{preview.cc.join(', ')}</dd><dt>Subject</dt><dd>{preview.subject}</dd></dl><pre>{preview.body}</pre><div className="modal-actions"><button className="secondary" onClick={() => setPreview(null)}>Close preview</button></div></div></div>}
 
-    {modal === 'import' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Import leads"><form className="modal" onSubmit={submitImport}><div className="modal-head"><div><span className="eyebrow">IMPORT AS NEW</span><h2>Add your email list</h2></div><button type="button" onClick={() => setModal(null)}><Icon name="close"/></button></div><p>Paste one email per line, or CSV with an <code>Email</code> header. Supported columns: Company, Contact Name, Email, Category, Website, Personalization, Notes.</p><textarea autoFocus rows={12} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder={'brand@example.com\n\n— or —\n\nCompany,Email,Category\nAcme,brand@acme.com,Gaming Peripherals'}/><div className="info-line"><Icon name="shield"/>Every accepted row is created as NEW. Import never approves or emails a lead.</div><div className="modal-actions"><button type="button" className="secondary" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary" disabled={!importText.trim() || busy === 'import'}>Import leads</button></div></form></div>}
+    {modal === 'import' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Import leads"><form className="modal import-modal" onSubmit={submitImport}><div className="modal-head"><div><span className="eyebrow">IMPORT AS NEW</span><h2>Drop your lead workbook</h2></div><button type="button" onClick={() => setModal(null)}><Icon name="close"/></button></div><p>Your <code>.xlsx</code> file is read inside this browser. Choose a worksheet, review the sample, then import. The original file is not saved to Drive.</p><label className={`drop-zone ${dragActive ? 'drag-active' : ''}`} onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }} onDragOver={(e) => e.preventDefault()} onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }} onDrop={(e) => { e.preventDefault(); setDragActive(false); loadWorkbookFile(e.dataTransfer.files?.[0]); }}><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => loadWorkbookFile(e.target.files?.[0])}/><Icon name="upload" size={24}/><strong>{workbookUpload ? 'Choose a different workbook' : 'Drop an XLSX file here'}</strong><span>or click to browse · up to {formatFileSize(data?.imports.maxFileBytes || 5 * 1024 * 1024)}</span></label>{workbookUpload && selectedWorkbookSheet && <div className="workbook-card"><div className="workbook-summary"><div><strong>{workbookUpload.fileName}</strong><span>{formatFileSize(workbookUpload.fileBytes)} · {workbookUpload.sheets.length} worksheet{workbookUpload.sheets.length === 1 ? '' : 's'}</span></div>{workbookUpload.sheets.length > 1 && <label>Worksheet<select value={workbookSheetName} onChange={(e) => setWorkbookSheetName(e.target.value)}>{workbookUpload.sheets.map((sheet) => <option key={sheet.name}>{sheet.name}</option>)}</select></label>}</div><div className={`workbook-count ${workbookTooLarge ? 'too-large' : ''}`}><strong>{Math.max(0, selectedWorkbookSheet.rows.length - 1)}</strong><span>estimated data rows</span></div><div className="workbook-preview"><table><tbody>{selectedWorkbookSheet.rows.slice(0,4).map((row, rowIndex) => <tr key={rowIndex}>{row.slice(0,6).map((cell, cellIndex) => <td key={cellIndex}>{cell || '—'}</td>)}</tr>)}</tbody></table></div>{workbookTooLarge && <p className="file-error">Choose a worksheet with no more than {data?.imports.maxRows || 500} data rows.</p>}</div>}<div className="import-divider"><span>or paste emails / CSV</span></div><textarea rows={5} value={importText} onChange={(e) => { setImportText(e.target.value); if (e.target.value) { setWorkbookUpload(null); setWorkbookSheetName(''); } }} placeholder={'brand@example.com\n\n— or —\n\nCompany,Email,Category\nAcme,brand@acme.com,Gaming Peripherals'}/><div className="info-line"><Icon name="shield"/><span>Every row is created as <strong>NEW</strong>. Missing-email companies stay research-only, duplicates are skipped, and importing never approves or sends mail.</span></div><div className="modal-actions"><button type="button" className="secondary" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary" disabled={(!selectedWorkbookSheet && !importText.trim()) || workbookTooLarge || busy === 'import'}>Import as NEW</button></div></form></div>}
 
     {modal === 'job' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run outreach job"><form className="modal compact" onSubmit={executeJob}><div className="modal-head"><div><span className="eyebrow">{mode}</span><h2>Run {pendingJob.toLowerCase().replace('_',' ')} job?</h2></div><button type="button" onClick={() => setModal(null)}><Icon name="close"/></button></div><p>{mode === 'DRY_RUN' ? 'This will validate and log eligible candidates. Gmail will not be read, no draft will be created, and no message will be sent.' : 'This job can access Gmail. Only rows that pass every server-side gate are eligible.'}</p>{jobPhrase && <label className="confirm-label">Type <strong>{jobPhrase}</strong> to continue<input value={confirmation} onChange={(e) => setConfirmation(e.target.value)} autoComplete="off"/></label>}<div className="modal-actions"><button type="button" className="secondary" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary" disabled={!!jobPhrase && confirmation.trim().toUpperCase() !== jobPhrase}>Run job</button></div></form></div>}
 

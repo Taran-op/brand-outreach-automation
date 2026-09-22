@@ -84,6 +84,10 @@ function uiBootstrap() {
       replyTo: normalizeEmail_(CONFIG.SENDER.REPLY_TO_EMAIL),
       cc: getConfiguredCcEmails_()
     },
+    imports: {
+      maxRows: Number(CONFIG.UI.MAX_IMPORT_ROWS),
+      maxFileBytes: Number(CONFIG.UI.MAX_IMPORT_FILE_BYTES)
+    },
     safety: {
       mode: mode,
       sendsEnabled: CONFIG.SAFETY.SENDS_ENABLED === true,
@@ -335,89 +339,248 @@ function uiBulkApprove(leadIds) {
 
 function uiImportLeads(rawText) {
   assertUiOwner_();
+  const text = String(rawText || '').trim();
+  assertCondition_(text.length > 0, 'Paste at least one email or CSV row.');
+  assertCondition_(text.length <= CONFIG.UI.MAX_IMPORT_CHARACTERS, 'Import text is too large.');
+  const parsed = Utilities.parseCsv(text);
   return withScriptLock_('UI Import Leads', function () {
-    const text = String(rawText || '').trim();
-    assertCondition_(text.length > 0, 'Paste at least one email or CSV row.');
-    assertCondition_(text.length <= CONFIG.UI.MAX_IMPORT_CHARACTERS, 'Import text is too large.');
-    const parsed = Utilities.parseCsv(text);
-    assertCondition_(parsed.length <= CONFIG.UI.MAX_IMPORT_ROWS + 1,
-      'Import exceeds the configured row limit of ' + CONFIG.UI.MAX_IMPORT_ROWS + '.');
-    const sheet = getLeadsSheet_();
-    const headerMap = getHeaderMap_(sheet, ALL_LEAD_HEADERS);
-    const existingRows = getLeadRows_(sheet);
-    const seen = {};
-    existingRows.forEach(function (record) {
-      const email = normalizeEmail_(leadValue_(record, LEAD_HEADERS.EMAIL));
-      if (email) seen[email] = true;
-    });
-
-    let sourceRows = parsed;
-    let importMap = null;
-    if (parsed.length) {
-      const normalizedHeaders = parsed[0].map(function (value) {
-        return safeDisplayText_(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
-      });
-      const emailIndex = normalizedHeaders.indexOf('email');
-      if (emailIndex !== -1) {
-        importMap = {
-          company: normalizedHeaders.indexOf('company'),
-          contactName: normalizedHeaders.indexOf('contactname'),
-          email: emailIndex,
-          category: normalizedHeaders.indexOf('category'),
-          website: normalizedHeaders.indexOf('website'),
-          personalization: normalizedHeaders.indexOf('personalization'),
-          notes: normalizedHeaders.indexOf('notes')
-        };
-        sourceRows = parsed.slice(1);
-      }
-    }
-
-    const output = [];
-    const skipped = [];
-    sourceRows.forEach(function (row, index) {
-      const valueAt = function (key, fallbackIndex) {
-        const column = importMap ? importMap[key] : fallbackIndex;
-        return column >= 0 && column < row.length ? row[column] : '';
-      };
-      const oneColumn = !importMap && row.length === 1;
-      const company = oneColumn ? '' : sanitizeUiText_(valueAt('company', 0), 200);
-      const email = normalizeEmail_(oneColumn ? row[0] : valueAt('email', 1));
-      const sourceRowNumber = index + (importMap ? 2 : 1);
-      if (!isValidSingleEmail_(email)) {
-        skipped.push({ row: sourceRowNumber, value: truncate_(safeDisplayText_(email), 120), reason: 'Invalid email' });
-        return;
-      }
-      if (seen[email]) {
-        skipped.push({ row: sourceRowNumber, value: email, reason: 'Duplicate email' });
-        return;
-      }
-      seen[email] = true;
-      const values = new Array(sheet.getLastColumn()).fill('');
-      const set = function (header, value) { values[headerMap[header] - 1] = value; };
-      set(LEAD_HEADERS.COMPANY, safeSheetText_(company));
-      set(LEAD_HEADERS.CONTACT_NAME, safeSheetText_(sanitizeUiText_(valueAt('contactName', -1), 160)));
-      set(LEAD_HEADERS.EMAIL, email);
-      set(LEAD_HEADERS.NORMALIZED_EMAIL, email);
-      set(LEAD_HEADERS.CATEGORY, safeSheetText_(sanitizeUiText_(valueAt('category', 2), 160)));
-      set(LEAD_HEADERS.WEBSITE, safeSheetText_(sanitizeUiText_(valueAt('website', -1), 500)));
-      set(LEAD_HEADERS.PERSONALIZATION, safeSheetText_(sanitizeUiMultilineText_(valueAt('personalization', -1), 1200)));
-      set(LEAD_HEADERS.NOTES, safeSheetText_(sanitizeUiMultilineText_(valueAt('notes', -1), 2000)));
-      set(LEAD_HEADERS.STATUS, STATUS.NEW);
-      set(LEAD_HEADERS.OPT_OUT, false);
-      set(LEAD_HEADERS.LEAD_ID, Utilities.getUuid());
-      set(LEAD_HEADERS.UPDATED_AT, new Date());
-      output.push(values);
-    });
-
-    if (output.length) {
-      const startRow = sheet.getLastRow() + 1;
-      ensureGridSize_(sheet, startRow + output.length - 1, sheet.getLastColumn());
-      sheet.getRange(startRow, 1, output.length, sheet.getLastColumn()).setValues(output);
-      SpreadsheetApp.flush();
-    }
-    safeLogEvent_('', '', 'IMPORT', 'SUCCESS', output.length + ' NEW lead(s) imported; ' + skipped.length + ' row(s) skipped. No lead was approved or emailed.');
-    return { imported: output.length, skipped: skipped.slice(0, 100) };
+    return importLeadRows_(parsed, 'PASTE');
   });
+}
+
+/**
+ * Receives rows parsed locally by the private React console. The original
+ * workbook is never uploaded to Drive or stored by Apps Script.
+ */
+function uiImportWorkbook(payload) {
+  assertUiOwner_();
+  const workbook = validateWorkbookImportPayload_(payload);
+  return withScriptLock_('UI Import Workbook', function () {
+    return importLeadRows_(workbook.rows, 'XLSX');
+  });
+}
+
+function validateWorkbookImportPayload_(payload) {
+  assertCondition_(payload && typeof payload === 'object', 'Choose an .xlsx file first.');
+  const fileName = sanitizeUiText_(payload.fileName, 180);
+  const sheetName = sanitizeUiText_(payload.sheetName, 120);
+  assertCondition_(/\.xlsx$/i.test(fileName), 'Only .xlsx files are accepted.');
+  assertCondition_(sheetName.length > 0, 'Choose a worksheet to import.');
+  assertCondition_(Array.isArray(payload.rows) && payload.rows.length > 0, 'The selected worksheet is empty.');
+  assertCondition_(payload.rows.length <= CONFIG.UI.MAX_IMPORT_ROWS + 1,
+    'Import exceeds the configured row limit of ' + CONFIG.UI.MAX_IMPORT_ROWS + '.');
+
+  let characterCount = 0;
+  const rows = payload.rows.map(function (row, rowIndex) {
+    assertCondition_(Array.isArray(row), 'Workbook row ' + (rowIndex + 1) + ' is invalid.');
+    assertCondition_(row.length <= CONFIG.UI.MAX_IMPORT_COLUMNS,
+      'Workbook row ' + (rowIndex + 1) + ' exceeds the configured column limit.');
+    return row.map(function (cell) {
+      assertCondition_(cell === null || ['string', 'number', 'boolean'].indexOf(typeof cell) !== -1,
+        'Workbook contains an unsupported cell value.');
+      const value = cell === null ? '' : String(cell);
+      characterCount += value.length;
+      return truncate_(value, 4000);
+    });
+  });
+  assertCondition_(characterCount <= CONFIG.UI.MAX_IMPORT_CHARACTERS,
+    'The selected worksheet contains too much text to import safely.');
+  return { fileName: fileName, sheetName: sheetName, rows: rows };
+}
+
+const IMPORT_HEADER_ALIASES = Object.freeze({
+  company: Object.freeze(['company', 'companyname', 'brand', 'brandname']),
+  contactName: Object.freeze(['contactname', 'contactperson', 'contactpersonname', 'recipientname']),
+  email: Object.freeze(['email', 'emailaddress', 'workemail', 'businessemail', 'contactemail']),
+  category: Object.freeze(['category', 'brandcategory', 'productcategory', 'segment', 'industry']),
+  website: Object.freeze(['website', 'websiteurl', 'companywebsite', 'brandwebsite', 'url', 'site']),
+  personalization: Object.freeze(['personalization', 'personalisation', 'customline', 'openingline']),
+  notes: Object.freeze(['notes', 'note', 'remarks', 'details', 'description', 'productnotes', 'focus']),
+  contact: Object.freeze(['contact', 'contactinfo', 'contactdetails', 'contactmethod', 'contactleadsource', 'leadsource', 'outreachmethod']),
+  india: Object.freeze(['india', 'indiapresence', 'indiaavailability', 'availableinindia', 'availabilityinindia'])
+});
+
+function normalizeImportHeader_(value) {
+  return safeDisplayText_(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function findImportColumn_(headers, aliases) {
+  for (let i = 0; i < aliases.length; i += 1) {
+    const index = headers.indexOf(aliases[i]);
+    if (index !== -1) return index;
+  }
+  return -1;
+}
+
+function detectImportLayout_(rows) {
+  const firstRow = rows.length ? rows[0] : [];
+  const headers = firstRow.map(normalizeImportHeader_);
+  const map = {};
+  Object.keys(IMPORT_HEADER_ALIASES).forEach(function (key) {
+    map[key] = findImportColumn_(headers, IMPORT_HEADER_ALIASES[key]);
+  });
+  const recognized = Object.keys(map).filter(function (key) { return map[key] >= 0; }).length;
+  if (recognized >= 2 || map.email >= 0) return { map: map, headerRows: 1, kind: 'HEADER' };
+
+  // Supports the common research-list layout:
+  // Row #, Category, Company, Website, Contact/Lead Source, India, Notes.
+  if (firstRow.length >= 7 && /^\d+$/.test(safeDisplayText_(firstRow[0])) &&
+      /\.[a-z]{2,}(?:\/|$)/i.test(safeDisplayText_(firstRow[3]))) {
+    return {
+      map: { company: 2, contactName: -1, email: -1, category: 1, website: 3,
+        personalization: -1, notes: 6, contact: 4, india: 5 },
+      headerRows: 0,
+      kind: 'RESEARCH_LIST'
+    };
+  }
+
+  return {
+    map: { company: 0, contactName: -1, email: 1, category: 2, website: -1,
+      personalization: -1, notes: -1, contact: -1, india: -1 },
+    headerRows: 0,
+    kind: 'BASIC'
+  };
+}
+
+function extractImportEmail_(value) {
+  const candidates = String(value || '').match(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}/ig) || [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const email = normalizeEmail_(candidates[i]);
+    if (isValidSingleEmail_(email)) return email;
+  }
+  return '';
+}
+
+function normalizeImportWebsite_(value) {
+  const website = sanitizeUiText_(value, 500);
+  if (!website) return '';
+  if (/^https?:\/\/[^\s]+$/i.test(website)) return website;
+  if (/^(?:www\.)?[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}(?:\/[^\s]*)?$/i.test(website)) return 'https://' + website;
+  return '';
+}
+
+function canonicalizeImportedCategory_(value) {
+  const original = safeDisplayText_(value);
+  const exact = CATEGORY_VALUES.filter(function (category) {
+    return category.toLowerCase() === original.toLowerCase();
+  });
+  if (exact.length) return exact[0];
+  const text = original.toLowerCase();
+  if (/creator|streamer|entertainment|comic|anime|media|music/.test(text)) return 'Creator / Entertainment';
+  if (/communit/.test(text)) return 'Gaming Community';
+  if (/mouse|mice|mousepad|deskmat|keyboard|chair|desk|controller|gaming access|peripheral/.test(text)) return 'Gaming Accessories';
+  if (/\bpc\b|hardware|processor|graphics|gpu|motherboard|memory|storage/.test(text)) return 'PC Hardware';
+  if (/laptop|notebook/.test(text)) return 'Laptops';
+  if (/smartphone|mobile phone/.test(text)) return 'Smartphones';
+  if (/audio|headphone|headset|speaker|microphone/.test(text)) return 'Audio';
+  if (/consumer electronic/.test(text)) return 'Consumer Electronics';
+  if (/saas|\bai\b|artificial intelligence|software/.test(text)) return 'SaaS / AI';
+  if (/telecom|internet|\bisp\b/.test(text)) return 'Telecom / Internet';
+  if (/startup|technology|\btech\b/.test(text)) return 'Technology Startup';
+  if (/beverage|drink/.test(text)) return 'Beverage';
+  if (/food|fmcg|snack|nutrition/.test(text)) return 'Food / FMCG';
+  if (/fashion|streetwear|lifestyle|apparel|beauty/.test(text)) return 'Fashion / Streetwear';
+  if (/automotive|automobile|mobility|vehicle|motorcycle|\bev\b/.test(text)) return 'Automotive';
+  if (/education|edtech|learning|career|upskill/.test(text)) return 'Education / EdTech';
+  return original ? 'Other' : '';
+}
+
+function importDuplicateKey_(company, email, website) {
+  if (email) return 'EMAIL:' + normalizeEmail_(email);
+  const normalizedCompany = safeDisplayText_(company).toLowerCase();
+  if (!normalizedCompany) return '';
+  return 'RESEARCH:' + normalizedCompany + '|' + safeDisplayText_(website).toLowerCase();
+}
+
+function buildImportedNotes_(rawCategory, category, rawWebsite, website, rawEmail, contact, india, sourceNotes) {
+  const parts = [];
+  if (rawCategory && category && rawCategory.toLowerCase() !== category.toLowerCase()) {
+    parts.push('Source category: ' + rawCategory);
+  }
+  const rawContact = safeDisplayText_(contact || rawEmail);
+  if (rawContact && rawContact.toLowerCase() !== extractImportEmail_(rawContact)) parts.push('Contact: ' + rawContact);
+  if (safeDisplayText_(india)) parts.push('India availability: ' + safeDisplayText_(india));
+  if (safeDisplayText_(rawWebsite) && !website) parts.push('Website: ' + safeDisplayText_(rawWebsite));
+  if (String(sourceNotes || '').trim()) parts.push(String(sourceNotes).trim());
+  return sanitizeUiMultilineText_(parts.join('\n'), 2000);
+}
+
+function importLeadRows_(parsed, sourceType) {
+  assertCondition_(Array.isArray(parsed) && parsed.length > 0, 'The import contains no rows.');
+  assertCondition_(parsed.length <= CONFIG.UI.MAX_IMPORT_ROWS + 1,
+    'Import exceeds the configured row limit of ' + CONFIG.UI.MAX_IMPORT_ROWS + '.');
+  const sheet = getLeadsSheet_();
+  const headerMap = getHeaderMap_(sheet, ALL_LEAD_HEADERS);
+  const existingRows = getLeadRows_(sheet);
+  const seen = {};
+  existingRows.forEach(function (record) {
+    const company = safeDisplayText_(leadValue_(record, LEAD_HEADERS.COMPANY));
+    const email = normalizeEmail_(leadValue_(record, LEAD_HEADERS.EMAIL));
+    const website = safeDisplayText_(leadValue_(record, LEAD_HEADERS.WEBSITE));
+    const key = importDuplicateKey_(company, email, website);
+    if (key) seen[key] = true;
+  });
+
+  const layout = detectImportLayout_(parsed);
+  const sourceRows = parsed.slice(layout.headerRows);
+  const output = [];
+  const skipped = [];
+  let withoutEmail = 0;
+  sourceRows.forEach(function (row, index) {
+    if (!Array.isArray(row) || !row.some(function (value) { return safeDisplayText_(value); })) return;
+    const valueAt = function (key) {
+      const column = layout.map[key];
+      return column >= 0 && column < row.length ? row[column] : '';
+    };
+    const oneColumn = layout.kind === 'BASIC' && row.length === 1;
+    const rawEmail = oneColumn ? row[0] : valueAt('email');
+    const contact = valueAt('contact');
+    const company = oneColumn ? '' : sanitizeUiText_(valueAt('company'), 200);
+    const email = extractImportEmail_(rawEmail) || extractImportEmail_(contact);
+    const rawWebsite = valueAt('website');
+    const website = normalizeImportWebsite_(rawWebsite);
+    const rawCategory = sanitizeUiText_(valueAt('category'), 160);
+    const category = canonicalizeImportedCategory_(rawCategory);
+    const sourceRowNumber = index + layout.headerRows + 1;
+    if (!company && !email) {
+      skipped.push({ row: sourceRowNumber, value: truncate_(safeDisplayText_(rawEmail || contact), 120), reason: 'Missing company and valid email' });
+      return;
+    }
+    const duplicateKey = importDuplicateKey_(company, email, website);
+    if (duplicateKey && seen[duplicateKey]) {
+      skipped.push({ row: sourceRowNumber, value: email || company, reason: email ? 'Duplicate email' : 'Duplicate company/website' });
+      return;
+    }
+    if (duplicateKey) seen[duplicateKey] = true;
+    if (!email) withoutEmail += 1;
+    const notes = buildImportedNotes_(rawCategory, category, rawWebsite, website, rawEmail, contact,
+      valueAt('india'), valueAt('notes'));
+    const values = new Array(sheet.getLastColumn()).fill('');
+    const set = function (header, value) { values[headerMap[header] - 1] = value; };
+    set(LEAD_HEADERS.COMPANY, safeSheetText_(company));
+    set(LEAD_HEADERS.CONTACT_NAME, safeSheetText_(sanitizeUiText_(valueAt('contactName'), 160)));
+    set(LEAD_HEADERS.EMAIL, email);
+    set(LEAD_HEADERS.NORMALIZED_EMAIL, email);
+    set(LEAD_HEADERS.CATEGORY, safeSheetText_(category));
+    set(LEAD_HEADERS.WEBSITE, safeSheetText_(website));
+    set(LEAD_HEADERS.PERSONALIZATION, safeSheetText_(sanitizeUiMultilineText_(valueAt('personalization'), 1200)));
+    set(LEAD_HEADERS.NOTES, safeSheetText_(notes));
+    set(LEAD_HEADERS.STATUS, STATUS.NEW);
+    set(LEAD_HEADERS.OPT_OUT, false);
+    set(LEAD_HEADERS.LEAD_ID, Utilities.getUuid());
+    set(LEAD_HEADERS.UPDATED_AT, new Date());
+    output.push(values);
+  });
+
+  if (output.length) {
+    const startRow = sheet.getLastRow() + 1;
+    ensureGridSize_(sheet, startRow + output.length - 1, sheet.getLastColumn());
+    sheet.getRange(startRow, 1, output.length, sheet.getLastColumn()).setValues(output);
+    SpreadsheetApp.flush();
+  }
+  safeLogEvent_('', '', 'IMPORT_' + sourceType, 'SUCCESS', output.length + ' NEW lead(s) imported; ' +
+    withoutEmail + ' require email research; ' + skipped.length + ' row(s) skipped. No lead was approved or emailed.');
+  return { imported: output.length, withoutEmail: withoutEmail, skipped: skipped.slice(0, 100) };
 }
 
 function uiRunJob(jobName, confirmation) {

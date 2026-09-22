@@ -34,7 +34,7 @@ The shipped configuration cannot send email: `DRY_RUN=true`, `SENDS_ENABLED=fals
 | `07_OutreachService.gs` | Initial/follow-up orchestration, eligibility, idempotency, persistence, and configuration checks |
 | `08_TriggersAndMenu.gs` | Sheet menu, owner/ID-verified trigger installation/removal, nonce-protected runtime kill switch, and exact pending-draft reset |
 | `09_SelfTests.gs` | No-send deterministic checks |
-| `10_WebApp.gs` | Owner-authenticated web endpoints, safe lead/import mutations, previews, manual jobs, and emergency disable |
+| `10_WebApp.gs` | Owner-authenticated web endpoints, workbook/CSV import layout detection and mapping, safe lead mutations, previews, manual jobs, and emergency disable |
 | `web/src` | React operator experience and local no-write mock preview |
 | `appsscript/Index.html` | Generated self-contained Apps Script HTML client |
 
@@ -45,6 +45,8 @@ The shipped configuration cannot send email: `DRY_RUN=true`, `SENDS_ENABLED=fals
 The web client calls Apps Script through `google.script.run`; it never receives OAuth credentials and cannot directly query Gmail or Sheets. Deployments must execute as the accessing user, allow only the owner, and match the explicit `CONFIG.UI.ALLOWED_EMAILS` server allowlist. Every API method repeats that allowlist check. State-changing calls reuse the shared script lock and the existing status/duplicate/suppression services. Programmatic edits reproduce the important `onEdit` protections because simple triggers do not fire for script-written cells.
 
 The console exposes no control that edits `SENDS_ENABLED`, `DRY_RUN`, or `TEST_MODE`; changing execution mode still requires a deliberate source-code review. Live and redirected-test jobs require a typed phrase before the server invokes a worker. Import and approval remain separate actions, and neither action sends email.
+
+`.xlsx` import is deliberately split across the boundary. The browser bundle parses the workbook locally with `read-excel-file` — the only runtime dependency the client carries — and posts just the selected worksheet's cell values through `google.script.run`. Apps Script never receives the file, so no Drive scope, upload, or temporary file is involved. The server treats those cells as untrusted input: it re-checks the owner allowlist before parsing, re-applies every row, column, character, and cell-type limit, detects the sheet layout itself rather than trusting a client-supplied mapping, and passes each value through the same sanitizers used for typed edits. Rows that arrive without a usable email are stored as research-only leads, which the unchanged approval gate refuses to send.
 
 ## Spreadsheet schema
 

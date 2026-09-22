@@ -195,6 +195,120 @@ function runSelfTests() {
         'Opt Out': true
       });
       assertCondition_(!shouldCheckRepliesForRecord_(record), 'already suppressed row remained a reply-scan candidate');
+    },
+    function () {
+      const layout = detectImportLayout_([['Company Name', 'Business Email', 'Brand Category']]);
+      assertCondition_(layout.kind === 'HEADER' && layout.headerRows === 1, 'aliased header row was not detected');
+      assertCondition_(layout.map.company === 0 && layout.map.email === 1 && layout.map.category === 2,
+        'header aliases mapped to the wrong columns');
+    },
+    function () {
+      const layout = detectImportLayout_([
+        ['1', 'Gaming Peripherals', 'Example Gear', 'examplegear.com', 'Contact form', 'Yes', 'Mice and pads']
+      ]);
+      assertCondition_(layout.kind === 'RESEARCH_LIST' && layout.headerRows === 0,
+        'header-less research list was not detected');
+      assertCondition_(layout.map.company === 2 && layout.map.website === 3 && layout.map.contact === 4,
+        'research list columns mapped incorrectly');
+    },
+    function () {
+      const layout = detectImportLayout_([['brand@example.com']]);
+      assertCondition_(layout.kind === 'BASIC' && layout.headerRows === 0,
+        'a plain email paste was mistaken for a header row');
+    },
+    function () {
+      assertCondition_(extractImportEmail_('Partnerships <Brand@Example.COM>') === 'brand@example.com',
+        'email inside a display-name cell was not extracted');
+      assertCondition_(extractImportEmail_('https://example.com/contact-us') === '',
+        'a contact page URL was mistaken for an email');
+      assertCondition_(extractImportEmail_('a@example.com\r\nBcc: other@example.com') === 'a@example.com',
+        'header-injection text did not resolve to a single address');
+    },
+    function () {
+      assertCondition_(normalizeImportWebsite_('examplegear.com') === 'https://examplegear.com',
+        'bare domain was not normalized');
+      assertCondition_(normalizeImportWebsite_('https://example.com/brands') === 'https://example.com/brands',
+        'an absolute URL was rewritten');
+      assertCondition_(normalizeImportWebsite_('javascript:alert(1)') === '',
+        'an unsafe scheme was accepted as a website');
+      assertCondition_(normalizeImportWebsite_('Not published') === '',
+        'free text was accepted as a website');
+    },
+    function () {
+      assertCondition_(canonicalizeImportedCategory_('gaming accessories') === 'Gaming Accessories',
+        'a known category was not matched case-insensitively');
+      assertCondition_(canonicalizeImportedCategory_('Mechanical Keyboards') === 'Gaming Accessories',
+        'a keyboard vendor was not mapped onto an existing category');
+      assertCondition_(CATEGORY_VALUES.indexOf(canonicalizeImportedCategory_('Pet Supplies')) !== -1,
+        'an unknown category escaped the allowed category list');
+      assertCondition_(canonicalizeImportedCategory_('') === '', 'a blank category invented a value');
+    },
+    function () {
+      assertCondition_(
+        importDuplicateKey_('Example Gear', 'Brand@Example.com', 'https://example.com') === 'EMAIL:brand@example.com',
+        'email did not take priority in the duplicate key');
+      assertCondition_(
+        importDuplicateKey_('Example Gear', '', 'https://Example.com') === 'RESEARCH:example gear|https://example.com',
+        'research rows are not de-duplicated by company and website');
+      assertCondition_(importDuplicateKey_('', '', '') === '', 'an empty row produced a duplicate key');
+    },
+    function () {
+      const clean = validateWorkbookImportPayload_({
+        fileName: 'leads.xlsx',
+        sheetName: 'Sheet1',
+        rows: [['Company', 'Email'], ['Example Gear', 'brand@example.com']]
+      });
+      assertCondition_(clean.rows.length === 2 && clean.rows[1][1] === 'brand@example.com',
+        'a valid workbook payload was altered');
+
+      let rejectedType = false;
+      try {
+        validateWorkbookImportPayload_({ fileName: 'leads.xlsx.exe', sheetName: 'Sheet1', rows: [['a']] });
+      } catch (error) { rejectedType = /Only \.xlsx/.test(errorMessage_(error)); }
+      assertCondition_(rejectedType, 'a non-xlsx file name was accepted');
+
+      let rejectedCell = false;
+      try {
+        validateWorkbookImportPayload_({ fileName: 'leads.xlsx', sheetName: 'Sheet1', rows: [[{ a: 1 }]] });
+      } catch (error) { rejectedCell = /unsupported cell value/.test(errorMessage_(error)); }
+      assertCondition_(rejectedCell, 'a non-primitive cell value was accepted');
+
+      const wideRow = [];
+      for (let i = 0; i <= CONFIG.UI.MAX_IMPORT_COLUMNS; i += 1) wideRow.push('x');
+      let rejectedWidth = false;
+      try {
+        validateWorkbookImportPayload_({ fileName: 'leads.xlsx', sheetName: 'Sheet1', rows: [wideRow] });
+      } catch (error) { rejectedWidth = /column limit/.test(errorMessage_(error)); }
+      assertCondition_(rejectedWidth, 'a row wider than the column limit was accepted');
+
+      const tallRows = [];
+      for (let j = 0; j <= CONFIG.UI.MAX_IMPORT_ROWS + 1; j += 1) tallRows.push(['x']);
+      let rejectedHeight = false;
+      try {
+        validateWorkbookImportPayload_({ fileName: 'leads.xlsx', sheetName: 'Sheet1', rows: tallRows });
+      } catch (error) { rejectedHeight = /row limit/.test(errorMessage_(error)); }
+      assertCondition_(rejectedHeight, 'a worksheet past the row limit was accepted');
+    },
+    function () {
+      const notes = buildImportedNotes_('Mechanical Keyboards', 'Gaming Accessories', 'examplegear.com',
+        'https://examplegear.com', '', 'Instagram DM @examplegear', 'Yes', 'Ships from Bengaluru');
+      assertCondition_(notes.indexOf('Source category: Mechanical Keyboards') !== -1,
+        'the original category text was not preserved in notes');
+      assertCondition_(notes.indexOf('Contact: Instagram DM @examplegear') !== -1,
+        'a non-email contact route was dropped');
+      assertCondition_(notes.indexOf('India availability: Yes') !== -1, 'India availability was dropped');
+      assertCondition_(notes.indexOf('Ships from Bengaluru') !== -1, 'source notes were dropped');
+      const emailOnly = buildImportedNotes_('', '', '', '', 'brand@example.com', '', '', '');
+      assertCondition_(emailOnly.indexOf('Contact:') === -1, 'a plain email was duplicated into notes');
+    },
+    function () {
+      const record = makeSelfTestLead_({
+        Company: 'Example Gear',
+        Email: '',
+        Status: STATUS.APPROVED
+      });
+      assertCondition_(/valid single email/.test(getInitialApprovalIssue_(record, [record], '', {}, {})),
+        'an imported research row without an email could be approved for sending');
     }
   ];
 
