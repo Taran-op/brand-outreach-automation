@@ -8,6 +8,7 @@
  * get a human's eyes before a brand hears from us.
  */
 
+import { brandFromWebsite, looksLikeBrandName } from './brand';
 import { CATEGORY_VALUES } from './constants';
 import { canonicalizeImportedCategory, normalizeImportWebsite } from './import';
 import { isValidSingleEmail, normalizeEmail, safeDisplayText, truncate } from './text';
@@ -339,6 +340,35 @@ function extractTitle(html: string): string {
   return match ? safeDisplayText(decodeEntities(match[1])) : '';
 }
 
+/**
+ * What the site calls itself. og:site_name is the company's own answer to
+ * that question, which beats a page title full of keywords; the title's
+ * segments are tried after it, and only a segment that reads as a name is
+ * kept, so a lead never ends up named after what it sells.
+ */
+function extractSiteName(html: string, title: string): string {
+  const patterns = [
+    /<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i,
+    /<meta[^>]+name=["']application-name["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+name=["']apple-mobile-web-app-title["'][^>]+content=["']([^"']+)["']/i
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(html);
+    const candidate = match ? safeDisplayText(decodeEntities(match[1])) : '';
+    if (looksLikeBrandName(candidate)) return candidate;
+  }
+
+  for (const segment of title.split(/\s[|\-–—:•]\s/)) {
+    const candidate = safeDisplayText(segment)
+      .replace(/^(?:home|welcome(?: to)?)\b[\s:–—-]*/i, '')
+      .replace(/[™®©]/g, '')
+      .trim();
+    if (looksLikeBrandName(candidate)) return candidate;
+  }
+  return '';
+}
+
 const localPartOf = (email: string) => email.split('@')[0].toLowerCase();
 const domainOf = (email: string) => email.split('@')[1]?.toLowerCase() || '';
 
@@ -503,6 +533,8 @@ const guessCategory = (text: string): string => {
 
 export type EnrichmentResult = {
   email: string;
+  /** What the site calls itself, when that reads as a name. */
+  brandName: string;
   /** What kind of channel the address is, so the notes can say so. */
   emailQuality: EmailQuality;
   description: string;
@@ -534,6 +566,7 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
   const company = safeDisplayText(companyName);
   const empty: EnrichmentResult = {
     email: '',
+    brandName: '',
     emailQuality: '',
     description: '',
     category: '',
@@ -573,6 +606,7 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
   const failures = new Map<string, number>();
   let description = '';
   let title = '';
+  let brandName = '';
   let sourceUrl = '';
   let pagesTried = 0;
   let pagesFetched = 0;
@@ -597,6 +631,7 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
 
         if (!description) description = extractMetaDescription(page.html);
         if (!title) title = extractTitle(page.html);
+        if (!brandName) brandName = extractSiteName(page.html, title);
 
         const pageEmails = extractEmails(page.html);
         if (pageEmails.length) {
@@ -632,6 +667,8 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
 
   return {
     email: best?.email || '',
+    // The site's own name for itself, or its domain's spelling of it.
+    brandName: brandName || brandFromWebsite(base),
     emailQuality: best?.quality || '',
     description: truncate(description, 500),
     category: guessed && CATEGORY_VALUES.includes(guessed as never) ? guessed : canonicalizeImportedCategory(guessed),
