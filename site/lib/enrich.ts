@@ -22,17 +22,24 @@ const FETCH_TIMEOUT_MS = 5000;
 const MAX_BYTES = 1_500_000;
 
 /**
- * Pages a company usually publishes contacts on, in two waves. The first
- * wave is where an address almost always is; the second runs only when the
- * first gave no partnerships-grade channel. Each wave is fetched together,
- * and kept small: a burst of ten requests reads as an attack to some hosting
- * firewalls, which then ban the address for a while. The /pages/ forms are
- * the storefront convention most Indian direct-to-consumer brands use.
+ * Where to look when a home page links nowhere readable. Guessing paths was
+ * the old strategy for the whole crawl and it cost ten requests a site to
+ * mostly collect 404s; the site's own contact links are both cheaper and
+ * more accurate, so these are only the backstop. The /pages/ forms are the
+ * storefront convention most Indian direct-to-consumer brands use.
  */
-const PATH_WAVES = [
-  ['', '/contact', '/contact-us', '/pages/contact-us'],
-  ['/contactus', '/pages/contact', '/about-us', '/partnerships', '/partner-with-us', '/press']
-];
+const FALLBACK_PATHS = ['/contact', '/contact-us', '/pages/contact-us', '/about-us'];
+
+/** Pages followed from the home page, beyond the home page itself. */
+const MAX_CONTACT_PAGES = 4;
+
+/**
+ * How long one company may take. A row is abandoned by the research pass at
+ * twenty seconds, and a row abandoned mid-crawl is recorded as a failure and
+ * rested for a fortnight — so the crawl stops itself first, with whatever it
+ * has, rather than being cut off with nothing.
+ */
+const CRAWL_BUDGET_MS = 13_000;
 
 /**
  * Local-parts we actively want, best first: a partnerships or marketing
@@ -247,6 +254,8 @@ type PageFetch = {
   status: number;
   /** A short reason when nothing usable came back: dns, timeout, blocked, refused, empty. */
   failure: string;
+  /** Which user agent this page answered to, so the rest of the site can reuse it. */
+  userAgent: number;
 };
 
 /**
@@ -263,7 +272,8 @@ const USER_AGENTS = [
 
 const BLOCK_STATUSES = new Set([401, 403, 406, 409, 429, 503]);
 
-async function fetchOnce(url: string, userAgent: string): Promise<PageFetch> {
+async function fetchOnce(url: string, agentIndex: number): Promise<PageFetch> {
+  const userAgent = USER_AGENTS[agentIndex] || USER_AGENTS[0];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -280,7 +290,12 @@ async function fetchOnce(url: string, userAgent: string): Promise<PageFetch> {
     });
     const type = response.headers.get('content-type') || '';
     if (!/text\/html|application\/xhtml/i.test(type)) {
-      return { html: '', status: response.status, failure: BLOCK_STATUSES.has(response.status) ? 'blocked' : 'not-html' };
+      return {
+        html: '',
+        status: response.status,
+        failure: BLOCK_STATUSES.has(response.status) ? 'blocked' : 'not-html',
+        userAgent: agentIndex
+      };
     }
     const text = (await response.text()).slice(0, MAX_BYTES);
 
@@ -288,28 +303,92 @@ async function fetchOnce(url: string, userAgent: string): Promise<PageFetch> {
     // and 404s on storefronts are full pages with the footer contacts intact.
     // A short error body is a block page; a long one is content.
     if (!response.ok && text.length < 4000) {
-      return { html: '', status: response.status, failure: BLOCK_STATUSES.has(response.status) ? 'blocked' : 'empty' };
+      return {
+        html: '',
+        status: response.status,
+        failure: BLOCK_STATUSES.has(response.status) ? 'blocked' : 'empty',
+        userAgent: agentIndex
+      };
     }
-    return { html: text, status: response.status, failure: text ? '' : 'empty' };
+    return { html: text, status: response.status, failure: text ? '' : 'empty', userAgent: agentIndex };
   } catch (error) {
     const cause = (error as { cause?: { code?: string } }).cause;
     const code = cause?.code || '';
-    if ((error as Error).name === 'AbortError') return { html: '', status: 0, failure: 'timeout' };
-    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return { html: '', status: 0, failure: 'dns' };
-    if (code === 'ECONNREFUSED' || code === 'ECONNRESET') return { html: '', status: 0, failure: 'refused' };
-    if (/CERT|TLS|SSL/i.test(code)) return { html: '', status: 0, failure: 'tls' };
-    return { html: '', status: 0, failure: 'error' };
+    const failed = (failure: string): PageFetch => ({ html: '', status: 0, failure, userAgent: agentIndex });
+    if ((error as Error).name === 'AbortError') return failed('timeout');
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return failed('dns');
+    if (code === 'ECONNREFUSED' || code === 'ECONNRESET') return failed('refused');
+    if (/CERT|TLS|SSL/i.test(code)) return failed('tls');
+    return failed('error');
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchPage(url: string): Promise<PageFetch> {
-  if (!isPublicHttpUrl(url)) return { html: '', status: 0, failure: 'unsafe' };
-  const first = await fetchOnce(url, USER_AGENTS[0]);
+/**
+ * One page. The alternate user agent is tried only when the first is
+ * refused, and only where the caller has not already learned which one this
+ * site answers to — a retry on every page of a site that blocks everything
+ * doubled the time spent on exactly the sites worth least.
+ */
+async function fetchPage(url: string, agentIndex?: number): Promise<PageFetch> {
+  if (!isPublicHttpUrl(url)) return { html: '', status: 0, failure: 'unsafe', userAgent: 0 };
+  if (agentIndex !== undefined) return fetchOnce(url, agentIndex);
+
+  const first = await fetchOnce(url, 0);
   if (first.html || (first.failure !== 'blocked' && first.failure !== 'empty')) return first;
-  const second = await fetchOnce(url, USER_AGENTS[1]);
+  const second = await fetchOnce(url, 1);
   return second.html ? second : first;
+}
+
+/**
+ * Where a page says its contact details are. Following these finds
+ * /get-in-touch, /pages/contact-us-1 and /en-in/connect — the addresses a
+ * fixed list of guessed paths never reaches — and skips the 404s.
+ */
+function contactLinks(html: string, origin: string): string[] {
+  let originHost = '';
+  try {
+    originHost = new URL(origin).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return [];
+  }
+
+  const scored = new Map<string, number>();
+  for (const match of html.matchAll(/<a\b[^>]*href=["']([^"'>]+)["'][^>]*>([\s\S]{0,160}?)<\/a>/gi)) {
+    const href = decodeEntities(match[1]).trim();
+    if (!href || href.startsWith('#') || /^(?:mailto|tel|javascript):/i.test(href)) continue;
+
+    let target: URL;
+    try {
+      target = new URL(href, origin);
+    } catch {
+      continue;
+    }
+    if (target.hostname.replace(/^www\./, '').toLowerCase() !== originHost) continue;
+    if (/\.(png|jpe?g|gif|svg|webp|pdf|zip|css|js|xml|ico)$/i.test(target.pathname)) continue;
+
+    const text = match[2].replace(/<[^>]+>/g, ' ').toLowerCase();
+    const hay = `${target.pathname.toLowerCase()} ${text}`;
+
+    let score = 0;
+    if (/contact|get[\s-]?in[\s-]?touch|reach[\s-]?us|connect[\s-]?(?:us|with)/.test(hay)) score = 100;
+    else if (/partner|collaborat|sponsor|advertis|media[\s-]?kit|press/.test(hay)) score = 80;
+    else if (/about/.test(hay)) score = 40;
+    else if (/support|help[\s-]?(?:centre|center|desk)/.test(hay)) score = 20;
+    if (!score) continue;
+
+    // A deep path is usually a blog post about contacting someone else.
+    if (target.pathname.split('/').filter(Boolean).length > 3) continue;
+
+    const clean = `${target.origin}${target.pathname}`.replace(/\/$/, '');
+    scored.set(clean, Math.max(scored.get(clean) || 0, score));
+  }
+
+  return [...scored.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)
+    .map(([url]) => url)
+    .slice(0, MAX_CONTACT_PAGES);
 }
 
 const decodeEntities = (value: string): string =>
@@ -561,7 +640,12 @@ const FAILURE_TEXT: Record<string, string> = {
  * Visits a company's own site and reports what it publishes. Returns empty
  * fields rather than guesses when nothing usable is found.
  */
-export async function enrichCompany(website: unknown, companyName: unknown): Promise<EnrichmentResult> {
+export async function enrichCompany(
+  website: unknown,
+  companyName: unknown,
+  options: { deadline?: number } = {}
+): Promise<EnrichmentResult> {
+  const deadline = Math.min(options.deadline ?? Infinity, Date.now() + CRAWL_BUDGET_MS);
   const base = normalizeImportWebsite(website);
   const company = safeDisplayText(companyName);
   const empty: EnrichmentResult = {
@@ -613,37 +697,54 @@ export async function enrichCompany(website: unknown, companyName: unknown): Pro
 
   const goodEnough = () => rankEmails(candidates, host, company)[0]?.quality === 'preferred';
 
-  outer: for (const origin of origins) {
-    for (const wave of PATH_WAVES) {
-      const pages = await Promise.all(
-        wave.map(async (path) => {
-          const url = `${origin}${path}`;
-          return { url, page: await fetchPage(url) };
-        })
-      );
-      for (const { url, page } of pages) {
-        pagesTried += 1;
-        if (!page.html) {
-          if (page.failure) failures.set(page.failure, (failures.get(page.failure) || 0) + 1);
-          continue;
-        }
-        pagesFetched += 1;
-
-        if (!description) description = extractMetaDescription(page.html);
-        if (!title) title = extractTitle(page.html);
-        if (!brandName) brandName = extractSiteName(page.html, title);
-
-        const pageEmails = extractEmails(page.html);
-        if (pageEmails.length) {
-          candidates.push(...pageEmails);
-          if (!sourceUrl) sourceUrl = url;
-        }
-      }
-      // A dead origin is not worth a second wave; a live one that already
-      // gave a partnerships-grade channel is not worth the extra requests.
-      if (!pagesFetched || goodEnough()) break;
+  const read = (url: string, page: PageFetch) => {
+    pagesTried += 1;
+    if (!page.html) {
+      if (page.failure) failures.set(page.failure, (failures.get(page.failure) || 0) + 1);
+      return;
     }
-    if (pagesFetched) break outer; // The first origin that answered is the right one.
+    pagesFetched += 1;
+
+    if (!description) description = extractMetaDescription(page.html);
+    if (!title) title = extractTitle(page.html);
+    if (!brandName) brandName = extractSiteName(page.html, title);
+
+    const pageEmails = extractEmails(page.html);
+    if (pageEmails.length) {
+      candidates.push(...pageEmails);
+      if (!sourceUrl) sourceUrl = url;
+    }
+  };
+
+  // The home page first: it carries the footer address on most sites, names
+  // the brand, and — the reason it comes alone — lists where the contact
+  // page actually lives, which beats guessing at paths.
+  let home = '';
+  let origin = '';
+  let userAgent = 0;
+  for (const candidateOrigin of origins) {
+    const page = await fetchPage(candidateOrigin);
+    read(candidateOrigin, page);
+    if (page.html) {
+      home = page.html;
+      origin = candidateOrigin;
+      userAgent = page.userAgent;
+      break;
+    }
+    if (Date.now() >= deadline) break;
+  }
+
+  if (home && !goodEnough() && Date.now() < deadline) {
+    // The site's own links, then the conventional paths as a backstop for a
+    // home page that is one big script and links to nothing readable.
+    const links = contactLinks(home, origin);
+    const targets = links.length >= 2 ? links : [...links, ...FALLBACK_PATHS.map((path) => `${origin}${path}`)];
+    const unique = [...new Set(targets)].filter((url) => url !== origin).slice(0, MAX_CONTACT_PAGES);
+
+    const pages = await Promise.all(
+      unique.map(async (url) => ({ url, page: await fetchPage(url, userAgent) }))
+    );
+    pages.forEach(({ url, page }) => read(url, page));
   }
 
   const ranked = rankEmails(candidates, host, company);

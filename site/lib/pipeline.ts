@@ -114,7 +114,7 @@ const RESEARCH_RETRY_DAYS = 14;
  * Bumped whenever the crawler learns a new way to find an address, so rows
  * that an older version gave up on are queued again instead of resting.
  */
-const RESEARCH_VERSION = 2;
+const RESEARCH_VERSION = 3;
 
 /**
  * Research stamps the Notes cell when it finds nothing, so the queue shrinks
@@ -210,7 +210,9 @@ export async function runResearch(
   const researchOne = async (record: LeadRecord): Promise<{ write: RowUpdate; found: boolean; diagnosis: string }> => {
     const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
     const website = leadValue(record, LEAD_HEADERS.WEBSITE);
-    const result = await enrichCompany(website, company);
+    // The crawl stops itself before the row cap does, so a slow site still
+    // records what it found instead of being abandoned with nothing.
+    const result = await enrichCompany(website, company, { deadline: Date.now() + RESEARCH_ROW_CAP_MS - 5000 });
 
     let email = result.email;
     let source = result.sourceUrl;
