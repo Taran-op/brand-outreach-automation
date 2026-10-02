@@ -387,6 +387,11 @@ export type JobSummary = {
   stoppedForLimit?: boolean;
   /** True when the burst ended for time with eligible leads still waiting. */
   stoppedForTime?: boolean;
+  /**
+   * True when today's send allowance is spent. A caller continuing a run
+   * stops on this: more bursts would only re-read the Sheet and refuse.
+   */
+  dailyCapReached?: boolean;
   /** Eligible leads this burst did not reach. */
   remaining?: number;
 };
@@ -443,6 +448,8 @@ export async function runSendJob(
   if (budget === 0) {
     summary.message = `Daily send limit of ${CONFIG.SAFETY.DAILY_SEND_LIMIT} already reached today.`;
     summary.stoppedForLimit = true;
+    summary.dailyCapReached = true;
+    summary.remaining = 0;
     return summary;
   }
 
@@ -495,6 +502,7 @@ export async function runSendJob(
   }
 
   summary.remaining = candidates.length - summary.processed;
+  summary.dailyCapReached = alreadySent + summary.sent >= CONFIG.SAFETY.DAILY_SEND_LIMIT;
   summary.message =
     `${summary.sent} sent, ${summary.skipped} skipped, ${summary.errors} error(s). ` +
     `Daily cap ${CONFIG.SAFETY.DAILY_SEND_LIMIT}, ${alreadySent + summary.sent} used today.` +

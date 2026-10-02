@@ -3,6 +3,8 @@
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import readWorkbook from 'read-excel-file/universal';
 
+import { shouldContinueSending } from '@/lib/burst';
+
 type Lead = {
   id: string; rowNumber: number; company: string; contactName: string; email: string;
   category: string; website: string; personalization: string; status: string;
@@ -31,7 +33,8 @@ type Bootstrap = {
 type Preview = { action: string; to: string; cc: string[]; subject: string; body: string; warnings: string[] };
 type JobSummary = { job: string; mode: string; processed: number; sent: number; dryRun: number; testSent: number;
   skipped: number; replies: number; errors: number; message: string; stoppedForLimit?: boolean; lockedOut?: boolean;
-  stoppedForTime?: boolean; remaining?: number; found?: number; added?: number };
+  stoppedForTime?: boolean; dailyCapReached?: boolean; remaining?: number; found?: number; added?: number;
+  renamed?: number; recorded?: number; approved?: number };
 
 /**
  * Research and sending run in bursts sized to the server's time limit, and
@@ -67,6 +70,7 @@ const SERVER_ROUTES: Record<string, Route> = {
   uiRunPipeline: { path: '/api/console/pipeline', method: 'POST' },
   uiDiscoverBrands: { path: '/api/console/discover', method: 'POST' },
   uiVerifyRouting: { path: '/api/console/verify-routing', method: 'POST' },
+  uiCheckAutomation: { path: '/api/console/automation-check', method: 'POST' },
   uiDeleteLeads: { path: '/api/console/delete', method: 'POST' }
 };
 
@@ -130,6 +134,52 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
   return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
+type SortKey = 'company' | 'contact' | 'category' | 'status' | 'activity';
+
+const SORTABLE_COLUMNS: [SortKey, string][] = [
+  ['company', 'Company'],
+  ['contact', 'Contact'],
+  ['category', 'Category'],
+  ['status', 'Status'],
+  ['activity', 'Last activity']
+];
+
+/**
+ * Status sorts by where a lead stands in the campaign rather than by name,
+ * so sorting on it groups what needs attention — replies and review — above
+ * what is simply in flight.
+ */
+const STATUS_ORDER = [
+  'REPLIED', 'INTERESTED', 'MEETING', 'NEGOTIATING', 'REVIEW_REQUIRED', 'APPROVED', 'NEW',
+  'FOLLOW_UP_1', 'FOLLOW_UP_2', 'SENT', 'CLOSED', 'NOT_INTERESTED', 'DO_NOT_CONTACT'
+];
+
+const compareLeads = (a: Lead, b: Lead, key: SortKey): number => {
+  const text = (value: string) => value.trim().toLowerCase();
+  switch (key) {
+    case 'company':
+      return text(a.company || a.email).localeCompare(text(b.company || b.email));
+    case 'contact':
+      return text(a.contactName).localeCompare(text(b.contactName));
+    case 'category':
+      return text(a.category).localeCompare(text(b.category));
+    case 'status': {
+      const rank = (lead: Lead) => {
+        const index = STATUS_ORDER.indexOf(lead.status);
+        return index === -1 ? STATUS_ORDER.length : index;
+      };
+      // Ascending means most-urgent-first, so the natural reading of the
+      // arrow matches the order the list is in.
+      return rank(b) - rank(a);
+    }
+    default: {
+      const at = Date.parse(a.updatedAt || a.initialSentAt) || 0;
+      const bt = Date.parse(b.updatedAt || b.initialSentAt) || 0;
+      return at - bt;
+    }
+  }
+};
+
 const statusTone = (status: string) => {
   if (['CLOSED','INTERESTED','MEETING','NEGOTIATING'].includes(status)) return 'good';
   if (['APPROVED','SENT','FOLLOW_UP_1','FOLLOW_UP_2'].includes(status)) return 'info';
@@ -169,6 +219,9 @@ function App() {
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  // Newest activity first: with a few hundred leads, what changed today is
+  // what the operator came to look at.
+  const [sort, setSort] = useState<{ key: SortKey; descending: boolean }>({ key: 'activity', descending: true });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -190,6 +243,11 @@ function App() {
 
   useEffect(() => { refresh(); }, []);
 
+  const toggleSort = (key: SortKey) =>
+    setSort((current) =>
+      current.key === key ? { key, descending: !current.descending } : { key, descending: key === 'activity' }
+    );
+
   const leads = useMemo(() => {
     if (!data) return [];
     const needle = query.trim().toLowerCase();
@@ -199,6 +257,15 @@ function App() {
       return matchesStatus && (!needle || haystack.includes(needle));
     });
   }, [data, query, statusFilter]);
+
+  const sortedLeads = useMemo(() => {
+    const direction = sort.descending ? -1 : 1;
+    return [...leads].sort((a, b) => {
+      const compared = compareLeads(a, b, sort.key);
+      // A stable tiebreak keeps rows from swapping places on every refresh.
+      return compared === 0 ? a.rowNumber - b.rowNumber : compared * direction;
+    });
+  }, [leads, sort]);
 
   const run = async <T,>(label: string, action: () => Promise<T>) => {
     setBusy(label); setError(''); setNotice('');
@@ -306,12 +373,29 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
-  // Discover, research, approve and send, each stage through the route that
-  // fits the server's time limit on its own, continuing while work remains.
+  /**
+   * The whole loop behind one press, in the order the stages depend on each
+   * other: replies first, so an overnight opt-out suppresses its lead before
+   * this same run could email it; then new brands, their addresses, and
+   * finally approval and sending, continued burst by burst until the queue
+   * is empty or the day's allowance is spent.
+   *
+   * A stage that fails is reported and skipped rather than stopping the run —
+   * discovery being unconfigured must not cost the sending.
+   */
   const runPipeline = async () => {
     try {
       const result = await run('pipeline', async () => {
         const parts: string[] = [];
+
+        setProgress('Checking replies…');
+        try {
+          const replies = await callServer<JobSummary>('uiRunJob', 'REPLIES', '');
+          parts.push(`${replies?.replies || 0} reply/replies found`);
+        } catch (e) {
+          parts.push(`reply check skipped — ${e instanceof Error ? e.message : String(e)}`);
+        }
+
         setProgress('Discovering brands…');
         try {
           const discovered = await callServer<JobSummary>('uiDiscoverBrands', []);
@@ -319,17 +403,26 @@ function App() {
         } catch (e) {
           parts.push(`discovery skipped — ${e instanceof Error ? e.message : String(e)}`);
         }
+
         const research = await researchAll();
         parts.push(`researched ${research.researched}, found ${research.found} address(es)`);
 
-        let sent = 0, bursts = 0, last: JobSummary | undefined;
+        let sent = 0, approved = 0, bursts = 0, last: JobSummary | undefined;
         do {
           setProgress(bursts ? `Sending… ${sent} sent so far` : 'Approving and sending…');
           last = await callServer<JobSummary>('uiRunPipeline');
           sent += last?.sent || 0;
+          approved += last?.approved || 0;
           bursts += 1;
-        } while (last?.stoppedForTime && (last?.remaining || 0) > 0 && bursts < MAX_BURSTS);
-        return `${parts.join(', ')}. ${last?.message || ''}${bursts > 1 ? ` ${sent} sent over ${bursts} bursts.` : ''}`;
+          // Keep going while a burst stopped short — for its own time limit
+          // or the per-run cap — and the day's allowance is not spent.
+        } while (shouldContinueSending(last) && bursts < MAX_BURSTS);
+
+        return (
+          `${parts.join(', ')}, approved ${approved}, sent ${sent}${bursts > 1 ? ` over ${bursts} bursts` : ''}. ` +
+          `${last?.message || ''}` +
+          (last?.dailyCapReached ? " Today's send limit is now reached — the rest goes out tomorrow." : '')
+        );
       });
       setNotice(result || 'Pipeline finished.');
       await refresh(true);
@@ -370,6 +463,13 @@ function App() {
         URL.revokeObjectURL(url);
       });
       setNotice('Replies workbook downloaded.');
+    } catch { /* surfaced globally */ }
+  };
+
+  const checkAutomation = async () => {
+    try {
+      const result = await run('automation', () => callServer<{ message: string }>('uiCheckAutomation'));
+      setNotice(result?.message || 'Scheduled run checked.');
     } catch { /* surfaced globally */ }
   };
 
@@ -483,15 +583,23 @@ function App() {
       <section className="workspace-grid">
         <div id="leads" className="panel leads-panel">
           <div className="panel-head"><div><span className="eyebrow">APPROVAL QUEUE</span><h2>Lead control</h2></div><div className="head-actions"><button className="secondary" onClick={() => setModal('import')}><Icon name="upload"/>Drop XLSX</button><button className="danger-button" disabled={!selected.size || !!busy} onClick={deleteSelected}><Icon name="close"/>Delete {selected.size || ''}</button><button className="primary" disabled={!selected.size || !!busy} onClick={approveSelected}><Icon name="check"/>Approve {selected.size || ''}</button></div></div>
-          <div className="filters"><label className="search"><Icon name="search"/><input aria-label="Search leads" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search company, email, category…"/></label><select aria-label="Filter by status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="ALL">All statuses</option>{data?.statuses.map((status) => <option key={status}>{status}</option>)}</select><span>{leads.length} shown</span></div>
-          <div className="table-wrap"><table><thead><tr><th className="check-cell"><input aria-label="Select all visible" type="checkbox" checked={!!leads.length && leads.every((l) => selected.has(l.id))} onChange={(e) => { const next = new Set(selected); leads.forEach((l) => e.target.checked ? next.add(l.id) : next.delete(l.id)); setSelected(next); }}/></th><th>Company</th><th>Contact</th><th>Category</th><th>Status</th><th>Last activity</th><th aria-label="Actions"/></tr></thead><tbody>
-            {leads.map((lead) => <tr key={lead.id} className={selected.has(lead.id) ? 'selected-row' : ''}><td className="check-cell"><input aria-label={`Select ${lead.company || lead.email}`} type="checkbox" checked={selected.has(lead.id)} onChange={(e) => { const next = new Set(selected); e.target.checked ? next.add(lead.id) : next.delete(lead.id); setSelected(next); }}/></td><td><button className="company-link" onClick={() => setDrawerLead(lead)}>{lead.company || <em>Company needed</em>}</button><small>{lead.email}</small></td><td>{lead.contactName || 'Team'}</td><td>{lead.category || 'Uncategorised'}</td><td><span className={`status ${statusTone(lead.status)}`}>{lead.status.replaceAll('_',' ')}</span>{lead.dueAction && <small className="due">{lead.dueAction.replaceAll('_',' ')} due</small>}</td><td>{formatDate(lead.updatedAt || lead.initialSentAt)}</td><td className="row-actions"><button title="Preview email" onClick={() => openPreview(lead)}><Icon name="mail"/></button><button title="Edit lead" onClick={() => setDrawerLead(lead)}><Icon name="edit"/></button></td></tr>)}
+          <div className="filters"><label className="search"><Icon name="search"/><input aria-label="Search leads" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search company, email, category…"/></label><select aria-label="Filter by status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="ALL">All statuses</option>{data?.statuses.map((status) => <option key={status}>{status}</option>)}</select><span>{leads.length} of {data?.leads.length || 0}</span></div>
+          <div className="table-wrap"><table className="lead-table"><thead><tr>
+            <th className="check-cell"><input aria-label="Select all visible" type="checkbox" checked={!!leads.length && leads.every((l) => selected.has(l.id))} onChange={(e) => { const next = new Set(selected); leads.forEach((l) => e.target.checked ? next.add(l.id) : next.delete(l.id)); setSelected(next); }}/></th>
+            {SORTABLE_COLUMNS.map(([key, label]) => <th key={key} className={sort.key === key ? 'sorted' : ''}>
+              <button type="button" className="sort-button" onClick={() => toggleSort(key)} aria-label={`Sort by ${label}`}>
+                {label}<span className="sort-arrow">{sort.key === key ? (sort.descending ? '▾' : '▴') : ''}</span>
+              </button>
+            </th>)}
+            <th aria-label="Actions"/>
+          </tr></thead><tbody>
+            {sortedLeads.map((lead) => <tr key={lead.id} className={selected.has(lead.id) ? 'selected-row' : ''}><td className="check-cell"><input aria-label={`Select ${lead.company || lead.email}`} type="checkbox" checked={selected.has(lead.id)} onChange={(e) => { const next = new Set(selected); e.target.checked ? next.add(lead.id) : next.delete(lead.id); setSelected(next); }}/></td><td className="company-cell"><button className="company-link" onClick={() => setDrawerLead(lead)}>{lead.company || <em>Company needed</em>}</button><small>{lead.email}</small></td><td>{lead.contactName || 'Team'}</td><td>{lead.category || 'Uncategorised'}</td><td><span className={`status ${statusTone(lead.status)}`}>{lead.status.replaceAll('_',' ')}</span>{lead.dueAction && <small className="due">{lead.dueAction.replaceAll('_',' ')} due</small>}</td><td className="when-cell">{formatDate(lead.updatedAt || lead.initialSentAt)}</td><td className="row-actions"><button title="Preview email" onClick={() => openPreview(lead)}><Icon name="mail"/></button><button title="Edit lead" onClick={() => setDrawerLead(lead)}><Icon name="edit"/></button></td></tr>)}
             {!leads.length && <tr><td colSpan={7} className="empty">No leads match this view.</td></tr>}
           </tbody></table></div>
           {data?.truncated && <p className="footnote">Showing the first {data.leads.length} records. Use the source Sheet for the complete list.</p>}
         </div>
 
-        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Research, approve, send in one pass</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
+        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Replies, discover, research, approve, send</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || mailBlocked} onClick={checkAutomation}><Icon name="shield"/><span><strong>Check scheduled run</strong><small>Proves the stored token works · sends nothing</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
       </section>
 
       <section id="replies" className="panel replies-panel">
