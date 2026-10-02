@@ -1,3 +1,4 @@
+import { CopyToken } from './CopyToken';
 import { auth, GOOGLE_SCOPES } from '@/auth';
 import { isAllowedEmail } from '@/lib/config';
 import { redirect } from 'next/navigation';
@@ -108,7 +109,13 @@ export default async function Setup() {
         {session?.refreshToken ? (
           <>
             <p className="signin-hint">Your refresh token — copy it now, it is not shown again:</p>
-            <pre className="setup-token">{session.refreshToken}</pre>
+            <CopyToken token={session.refreshToken} />
+            <p className="signin-hint">
+              Paste it into the Vercel project as <code>AUTOMATION_REFRESH_TOKEN</code> (Production),
+              either in <strong>Settings → Environment Variables</strong> or with{' '}
+              <code>vercel env add AUTOMATION_REFRESH_TOKEN production</code>. The scheduled run picks
+              it up on the next deployment.
+            </p>
           </>
         ) : (
           <p className="signin-error">
