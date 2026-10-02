@@ -9,6 +9,7 @@ import {
   getInitialApprovalIssue,
   leadId
 } from './approval';
+import { brandFromWebsite, looksLikeBrandName } from './brand';
 import { LEAD_HEADERS, STATUS } from './constants';
 import { discoverBrands } from './discover';
 import { enrichCompany, searchForEmail } from './enrich';
@@ -21,7 +22,8 @@ import {
   normalizeEmail,
   safeDisplayText,
   safeSheetText,
-  sanitizeUiMultilineText
+  sanitizeUiMultilineText,
+  truncate
 } from './text';
 
 export const autoApproveEnabled = (): boolean => process.env.CONSOLE_AUTO_APPROVE === 'true';
@@ -88,7 +90,14 @@ const needsResearch = (record: LeadRecord): boolean =>
   Boolean(safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY))) &&
   Boolean(safeDisplayText(leadValue(record, LEAD_HEADERS.WEBSITE)));
 
-export type ResearchSummary = { researched: number; found: number; remaining: number; failureExample: string };
+export type ResearchSummary = {
+  researched: number;
+  found: number;
+  /** Rows whose Company cell held a description and now holds a name. */
+  renamed: number;
+  remaining: number;
+  failureExample: string;
+};
 
 /**
  * One burst of research. The function limit is 300 s, so a burst stops
@@ -105,7 +114,7 @@ const RESEARCH_RETRY_DAYS = 14;
  * Bumped whenever the crawler learns a new way to find an address, so rows
  * that an older version gave up on are queued again instead of resting.
  */
-const RESEARCH_VERSION = 2;
+const RESEARCH_VERSION = 3;
 
 /**
  * Research stamps the Notes cell when it finds nothing, so the queue shrinks
@@ -152,11 +161,35 @@ const withTimeout = <T,>(work: Promise<T>, ms: number): Promise<T> =>
   });
 
 /**
+ * A replacement for a Company cell that holds a description instead of a
+ * name, or empty when the cell is already a name or nothing better exists.
+ * What the site calls itself comes first; its domain's spelling second.
+ */
+function betterCompanyName(current: string, siteName: string, website: unknown): string {
+  if (!current || looksLikeBrandName(current)) return '';
+  const candidate = looksLikeBrandName(siteName) ? safeDisplayText(siteName) : brandFromWebsite(website);
+  if (!candidate) return '';
+  return candidate.toLowerCase() === current.toLowerCase() ? '' : candidate;
+}
+
+/** Renaming is the operator's row to check, so the row says what happened. */
+const renameNote = (from: string, to: string): string =>
+  `Company renamed to "${to}" — the previous value ("${truncate(from, 80)}") described the business rather than naming it. ` +
+  'Correct it by hand if this is wrong.';
+
+/** Rows renamed in one run without visiting their site, to bound the write. */
+const MAX_RENAMES_PER_RUN = 200;
+
+/**
  * Finds addresses for rows that lack one. Two sources per company: its own
  * site first, then a web search for addresses on its domain when the site
  * publishes none. Rows are worked several at a time inside a fixed time
  * budget, so a call clears as many as it safely can, and the summary says
  * how many are still waiting.
+ *
+ * It also repairs names: a row whose Company cell is a description is
+ * renamed from its domain, whether or not it is due for research, because
+ * that cell is what the outreach email calls the brand.
  */
 export async function runResearch(
   accessToken: string,
@@ -177,7 +210,9 @@ export async function runResearch(
   const researchOne = async (record: LeadRecord): Promise<{ write: RowUpdate; found: boolean; diagnosis: string }> => {
     const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
     const website = leadValue(record, LEAD_HEADERS.WEBSITE);
-    const result = await enrichCompany(website, company);
+    // The crawl stops itself before the row cap does, so a slow site still
+    // records what it found instead of being abandoned with nothing.
+    const result = await enrichCompany(website, company, { deadline: Date.now() + RESEARCH_ROW_CAP_MS - 5000 });
 
     let email = result.email;
     let source = result.sourceUrl;
@@ -193,6 +228,15 @@ export async function runResearch(
 
     const updates: CellUpdate[] = [{ header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() }];
     const notes: string[] = [];
+
+    // Discovery names a lead from a search result, which is often a
+    // description of the business rather than its name. The site's own name
+    // for itself is better, and the email addresses the brand by it.
+    const rename = betterCompanyName(company, result.brandName, website);
+    if (rename) {
+      updates.push({ header: LEAD_HEADERS.COMPANY, value: rename });
+      notes.push(renameNote(company, rename));
+    }
 
     if (email) {
       updates.push({ header: LEAD_HEADERS.EMAIL, value: email });
@@ -253,17 +297,50 @@ export async function runResearch(
   };
   await Promise.all(Array.from({ length: RESEARCH_CONCURRENCY }, worker));
 
+  const researched = writes.length;
+
+  // Rows the research queue did not cover can still be misnamed — most of
+  // them have an address already, which is exactly why they were skipped,
+  // and an email is about to go out addressed to a description. Their domain
+  // is enough to fix the name without fetching anything.
+  const queued = new Set(queue.map((record) => record.rowNumber));
+  let renamed = 0;
+  for (const record of records) {
+    if (queued.has(record.rowNumber) || renamed >= MAX_RENAMES_PER_RUN) continue;
+    const company = safeDisplayText(leadValue(record, LEAD_HEADERS.COMPANY));
+    const rename = betterCompanyName(company, '', leadValue(record, LEAD_HEADERS.WEBSITE));
+    if (!rename) continue;
+
+    renamed += 1;
+    writes.push({
+      record,
+      updates: [
+        { header: LEAD_HEADERS.COMPANY, value: rename },
+        { header: LEAD_HEADERS.UPDATED_AT, value: new Date().toISOString() },
+        {
+          header: LEAD_HEADERS.NOTES,
+          value: sanitizeUiMultilineText(
+            [renameNote(company, rename), operatorNotes(record)].filter(Boolean).join('\n'),
+            2000
+          )
+        }
+      ]
+    });
+  }
+
   await updateManyLeadCells(accessToken, writes);
 
-  const researched = writes.length;
-  if (researched) {
+  if (researched || renamed) {
     await appendLogRow(accessToken, {
       action: 'ENRICH',
       result: 'SUCCESS',
-      message: `${researched} row(s) researched; ${found} address(es) found. All rows remain NEW.`
+      message:
+        `${researched} row(s) researched; ${found} address(es) found` +
+        (renamed ? `; ${renamed} row(s) renamed from a description to a brand name` : '') +
+        '. All rows remain NEW.'
     });
   }
-  return { researched, found, remaining: pending.length - researched, failureExample };
+  return { researched, found, renamed, remaining: pending.length - researched, failureExample };
 }
 
 export type ApproveSummary = { approved: number; refusals: string[] };

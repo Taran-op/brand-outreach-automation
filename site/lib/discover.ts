@@ -9,6 +9,7 @@
  * as a hand-imported list — research, then the approval gates, then sending.
  */
 
+import { brandFromWebsite, looksLikeBrandName } from './brand';
 import { CATEGORY_VALUES } from './constants';
 import { safeDisplayText, truncate } from './text';
 
@@ -70,19 +71,31 @@ const registrableHost = (url: string): string => {
   }
 };
 
-/** "Cosmic Byte - India's Gaming Gear | Official" -> "Cosmic Byte". */
+/**
+ * "Cosmic Byte - India's Gaming Gear | Official" -> "Cosmic Byte".
+ *
+ * A title is only sometimes a name. Plenty read "AI Development Services
+ * Company for Business Automation", which is a description of the business,
+ * and putting that in the Company cell means the outreach email addresses a
+ * brand by what it sells. So each segment of the title is tried in turn and
+ * kept only if it reads as a name; the domain's own spelling is the fallback,
+ * and an empty result — no row — is better than a sentence.
+ */
 function companyNameFromTitle(title: string, host: string): string {
-  const first = safeDisplayText(title)
-    .split(/\s[|\-–—:•]\s/)[0]
-    .replace(/\b(official|website|site|india|online|store|shop|home|buy)\b/gi, '')
-    .replace(/[™®©]/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  if (first && first.length >= 2 && first.length <= 60 && !/^https?:/i.test(first)) return first;
+  const clean = (value: string) =>
+    value
+      .replace(/^(?:home|welcome(?: to)?|official website of)\b[\s:–—-]*/i, '')
+      .replace(/\b(official|website|site|online|store|shop|homepage|buy)\b/gi, '')
+      .replace(/[™®©]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/^[\s|\-–—:•,]+|[\s|\-–—:•,]+$/g, '')
+      .trim();
 
-  // Fall back to the domain label, title-cased.
-  const label = host.split('.')[0] || '';
-  return label ? label.charAt(0).toUpperCase() + label.slice(1) : '';
+  for (const segment of safeDisplayText(title).split(/\s[|\-–—:•]\s|(?:\s[|•]\s?)/)) {
+    const candidate = clean(segment);
+    if (candidate && looksLikeBrandName(candidate)) return candidate;
+  }
+  return brandFromWebsite(`https://${host}`);
 }
 
 export type Candidate = {

@@ -35,18 +35,28 @@ export async function POST() {
     const operator = await requireOperator();
     const result = await runResearch(operator.accessToken, MAX_ROWS_PER_RUN);
 
+    const renameNote = result.renamed
+      ? ` ${result.renamed} company name(s) that described the business were replaced with the brand's own name.`
+      : '';
+
     if (result.researched > 0) {
       return Response.json(
         summary({
           processed: result.researched,
           skipped: result.researched - result.found,
           found: result.found,
+          renamed: result.renamed,
           remaining: result.remaining,
           message:
             `${result.researched} researched, ${result.found} address(es) found${result.remaining > 0 ? `; ${result.remaining} still queued` : ''}. Rows stay NEW — review and approve before anything is sent.` +
+            renameNote +
             (result.found === 0 && result.failureExample ? ` Example: ${result.failureExample}` : '')
         })
       );
+    }
+
+    if (result.renamed > 0) {
+      return Response.json(summary({ renamed: result.renamed, message: `Nothing to research.${renameNote}` }));
     }
 
     // "Nothing happened" is the most confusing outcome, so say which condition

@@ -13,6 +13,7 @@
  * sentence, because the document did not replace them.
  */
 
+import { displayBrand, greetingFor, looksLikeBrandName } from './brand';
 import { CONFIG } from './config';
 import { ACTION, AUTOMATION_STOP_STATUSES, LEAD_HEADERS, STATUS, type ActionValue } from './constants';
 import { leadValue, type LeadRecord } from './sheets';
@@ -130,10 +131,8 @@ export type OutreachMessage = {
   htmlBody: string;
 };
 
-const buildInitialSubject = (company: unknown): string => {
-  const companyName = safeDisplayText(company) || 'Your team';
-  return truncate(`${companyName} × ${safeDisplayText(CONFIG.EVENT.NAME)} — Brand Activation Opportunity`, 180);
-};
+const buildInitialSubject = (brand: string): string =>
+  truncate(`${brand || 'Your team'} × ${safeDisplayText(CONFIG.EVENT.NAME)} — Brand Activation Opportunity`, 180);
 
 const eventOpeningLine = (): string => {
   const location = safeDisplayText(CONFIG.EVENT.LOCATION_DISPLAY);
@@ -223,8 +222,13 @@ export function buildEmailForLead(
   // Follow-ups go to the address the initial actually reached, never to a
   // later edit of the Email cell.
   const to = action === ACTION.INITIAL ? currentEmail : sentToEmail || currentEmail;
-  const subject = buildInitialSubject(company);
-  const greeting = contactName || (company ? `${company} team` : 'team');
+  const website = leadValue(record, LEAD_HEADERS.WEBSITE);
+  // The Company cell can hold a description rather than a name — discovery
+  // reads it off a search result — so the brand shown to the reader is the
+  // name if there is one, the domain's own spelling if not.
+  const brand = displayBrand(company, website);
+  const subject = buildInitialSubject(brand);
+  const greeting = greetingFor(contactName, company);
   const template = resolveCategoryTemplate(category);
 
   if (action === ACTION.FOLLOW_UP_1) {
@@ -232,7 +236,7 @@ export function buildEmailForLead(
       `Hi ${greeting},`,
       `Just following up on my note about exhibition and brand activation opportunities at ${safeDisplayText(CONFIG.EVENT.NAME)}.`,
       template.followUp,
-      `Would it be useful if I sent over the stall options, audience plan and possible collaboration formats for ${company || 'your team'}?`
+      `Would it be useful if I sent over the stall options, audience plan and possible collaboration formats for ${brand || 'your team'}?`
     ]);
   }
 
@@ -246,7 +250,7 @@ export function buildEmailForLead(
     ]);
   }
 
-  return buildInitialEmail(to, subject, greeting, company, personalization, options.inlineImageCid);
+  return buildInitialEmail(to, subject, greeting, brand, personalization, options.inlineImageCid);
 }
 
 /**
@@ -388,6 +392,16 @@ export function getPreviewWarnings(
   }
 
   if (hasPendingAction(record)) warnings.push('A pending send guard exists; automatic sending is paused.');
+
+  // Worth saying out loud in the preview: the operator can type the real name
+  // into the Company cell and the email will use it.
+  const company = leadValue(record, LEAD_HEADERS.COMPANY);
+  if (safeDisplayText(company) && !looksLikeBrandName(company) && !safeDisplayText(leadValue(record, LEAD_HEADERS.CONTACT_NAME))) {
+    warnings.push(
+      `The Company cell reads as a description rather than a brand name, so this email opens with "Dear Sir/Ma'am". ` +
+        'Put the brand name in Company to address them by name.'
+    );
+  }
   return warnings;
 }
 
