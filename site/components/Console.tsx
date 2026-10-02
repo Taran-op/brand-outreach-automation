@@ -3,6 +3,8 @@
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import readWorkbook from 'read-excel-file/universal';
 
+import { shouldContinueSending } from '@/lib/burst';
+
 type Lead = {
   id: string; rowNumber: number; company: string; contactName: string; email: string;
   category: string; website: string; personalization: string; status: string;
@@ -31,7 +33,8 @@ type Bootstrap = {
 type Preview = { action: string; to: string; cc: string[]; subject: string; body: string; warnings: string[] };
 type JobSummary = { job: string; mode: string; processed: number; sent: number; dryRun: number; testSent: number;
   skipped: number; replies: number; errors: number; message: string; stoppedForLimit?: boolean; lockedOut?: boolean;
-  stoppedForTime?: boolean; remaining?: number; found?: number; added?: number };
+  stoppedForTime?: boolean; dailyCapReached?: boolean; remaining?: number; found?: number; added?: number;
+  renamed?: number; recorded?: number; approved?: number };
 
 /**
  * Research and sending run in bursts sized to the server's time limit, and
@@ -306,12 +309,29 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
-  // Discover, research, approve and send, each stage through the route that
-  // fits the server's time limit on its own, continuing while work remains.
+  /**
+   * The whole loop behind one press, in the order the stages depend on each
+   * other: replies first, so an overnight opt-out suppresses its lead before
+   * this same run could email it; then new brands, their addresses, and
+   * finally approval and sending, continued burst by burst until the queue
+   * is empty or the day's allowance is spent.
+   *
+   * A stage that fails is reported and skipped rather than stopping the run —
+   * discovery being unconfigured must not cost the sending.
+   */
   const runPipeline = async () => {
     try {
       const result = await run('pipeline', async () => {
         const parts: string[] = [];
+
+        setProgress('Checking replies…');
+        try {
+          const replies = await callServer<JobSummary>('uiRunJob', 'REPLIES', '');
+          parts.push(`${replies?.replies || 0} reply/replies found`);
+        } catch (e) {
+          parts.push(`reply check skipped — ${e instanceof Error ? e.message : String(e)}`);
+        }
+
         setProgress('Discovering brands…');
         try {
           const discovered = await callServer<JobSummary>('uiDiscoverBrands', []);
@@ -319,17 +339,26 @@ function App() {
         } catch (e) {
           parts.push(`discovery skipped — ${e instanceof Error ? e.message : String(e)}`);
         }
+
         const research = await researchAll();
         parts.push(`researched ${research.researched}, found ${research.found} address(es)`);
 
-        let sent = 0, bursts = 0, last: JobSummary | undefined;
+        let sent = 0, approved = 0, bursts = 0, last: JobSummary | undefined;
         do {
           setProgress(bursts ? `Sending… ${sent} sent so far` : 'Approving and sending…');
           last = await callServer<JobSummary>('uiRunPipeline');
           sent += last?.sent || 0;
+          approved += last?.approved || 0;
           bursts += 1;
-        } while (last?.stoppedForTime && (last?.remaining || 0) > 0 && bursts < MAX_BURSTS);
-        return `${parts.join(', ')}. ${last?.message || ''}${bursts > 1 ? ` ${sent} sent over ${bursts} bursts.` : ''}`;
+          // Keep going while a burst stopped short — for its own time limit
+          // or the per-run cap — and the day's allowance is not spent.
+        } while (shouldContinueSending(last) && bursts < MAX_BURSTS);
+
+        return (
+          `${parts.join(', ')}, approved ${approved}, sent ${sent}${bursts > 1 ? ` over ${bursts} bursts` : ''}. ` +
+          `${last?.message || ''}` +
+          (last?.dailyCapReached ? " Today's send limit is now reached — the rest goes out tomorrow." : '')
+        );
       });
       setNotice(result || 'Pipeline finished.');
       await refresh(true);
@@ -491,7 +520,7 @@ function App() {
           {data?.truncated && <p className="footnote">Showing the first {data.leads.length} records. Use the source Sheet for the complete list.</p>}
         </div>
 
-        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Research, approve, send in one pass</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
+        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Replies, discover, research, approve, send</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
       </section>
 
       <section id="replies" className="panel replies-panel">
