@@ -70,6 +70,7 @@ const SERVER_ROUTES: Record<string, Route> = {
   uiRunPipeline: { path: '/api/console/pipeline', method: 'POST' },
   uiDiscoverBrands: { path: '/api/console/discover', method: 'POST' },
   uiVerifyRouting: { path: '/api/console/verify-routing', method: 'POST' },
+  uiCheckAutomation: { path: '/api/console/automation-check', method: 'POST' },
   uiDeleteLeads: { path: '/api/console/delete', method: 'POST' }
 };
 
@@ -402,6 +403,13 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
+  const checkAutomation = async () => {
+    try {
+      const result = await run('automation', () => callServer<{ message: string }>('uiCheckAutomation'));
+      setNotice(result?.message || 'Scheduled run checked.');
+    } catch { /* surfaced globally */ }
+  };
+
   const verifyRouting = async () => {
     try {
       const result = await run('routing', () => callServer<{ message: string }>('uiVerifyRouting'));
@@ -520,7 +528,7 @@ function App() {
           {data?.truncated && <p className="footnote">Showing the first {data.leads.length} records. Use the source Sheet for the complete list.</p>}
         </div>
 
-        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Replies, discover, research, approve, send</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
+        <aside className="panel run-panel"><span className="eyebrow">MANUAL OPERATIONS</span><h2>Run jobs</h2><p>{mailBlocked ? `Mail runs from ${data?.safety.mailboxOwner || 'the campaign mailbox'}. You can manage leads here; sending and reply checks belong to that account.` : 'Every job re-checks the Sheet, exact status gates, opt-outs, duplicate evidence and configured limits.'}</p><button className="pipeline-button" disabled={jobsBlocked || !data?.safety.sendsEnabled} onClick={runPipeline}><Icon name="activity"/><span><strong>Run full pipeline</strong><small>Replies, discover, research, approve, send</small></span></button><button disabled={!!busy || mailBlocked} onClick={verifyRouting}><Icon name="refresh"/><span><strong>Verify reply routing</strong><small>Loopback to your reply-to address · ~1 min</small></span></button><button disabled={!!busy || mailBlocked} onClick={checkAutomation}><Icon name="shield"/><span><strong>Check scheduled run</strong><small>Proves the stored token works · sends nothing</small></span></button><button disabled={!!busy || !data?.safety.sendsEnabled} onClick={sendTest}><Icon name="shield"/><span><strong>Send test to myself</strong><small>Redirected · no lead contacted</small></span></button><button disabled={!!busy} onClick={discoverBrands}><Icon name="users"/><span><strong>Discover brands</strong><small>Google search by category · India · adds NEW rows</small></span></button><button disabled={!!busy} onClick={runEnrichment}><Icon name="search"/><span><strong>Research companies</strong><small>Find published contacts · stays NEW</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('INITIALS')}><Icon name="send"/><span><strong>{mode === 'DRY_RUN' ? 'Check approved leads' : 'Send approved leads'}</strong><small>Initial outreach queue</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('FOLLOW_UPS')}><Icon name="refresh"/><span><strong>{mode === 'DRY_RUN' ? 'Check follow-ups' : 'Process follow-ups'}</strong><small>Day 4 and Day 9 only</small></span></button><button disabled={jobsBlocked} onClick={() => openJob('REPLIES')}><Icon name="mail"/><span><strong>{mode === 'DRY_RUN' ? 'Plan reply checks' : 'Check replies'}</strong><small>No self-message classification</small></span></button><div className="run-foot"><span>From</span><strong>{data?.sender.from}</strong><span>Always CC</span><strong>{data?.sender.cc.join(', ')}</strong></div></aside>
       </section>
 
       <section id="replies" className="panel replies-panel">
