@@ -65,6 +65,7 @@ const SERVER_ROUTES: Record<string, Route> = {
   uiImportWorkbook: { path: '/api/console/import-workbook', method: 'POST' },
   uiRunJob: { path: '/api/console/job', method: 'POST' },
   uiEmergencyDisable: { path: '/api/console/disable', method: 'POST' },
+  uiResumeSending: { path: '/api/console/resume', method: 'POST' },
   uiEnrichLeads: { path: '/api/console/enrich', method: 'POST' },
   uiSendTest: { path: '/api/console/test-send', method: 'POST' },
   uiRunPipeline: { path: '/api/console/pipeline', method: 'POST' },
@@ -225,7 +226,7 @@ function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [modal, setModal] = useState<'import'|'job'|'disable'|null>(null);
+  const [modal, setModal] = useState<'import'|'job'|'disable'|'resume'|null>(null);
   const [importText, setImportText] = useState('');
   const [workbookUpload, setWorkbookUpload] = useState<WorkbookUpload | null>(null);
   const [workbookSheetName, setWorkbookSheetName] = useState('');
@@ -526,6 +527,14 @@ function App() {
     } catch { /* surfaced globally */ }
   };
 
+  const resumeSending = async () => {
+    try {
+      const result = await run('resume', () => callServer<{ message: string }>('uiResumeSending'));
+      setNotice(result?.message || 'Sending resumed.');
+      setModal(null); await refresh(true);
+    } catch { /* surfaced globally */ }
+  };
+
   const saveLead = async (lead: Lead) => {
     try {
       await run('save', () => callServer<Lead>('uiSaveLead', lead));
@@ -563,7 +572,9 @@ function App() {
         <div className={`safety-icon ${data?.safety.systemDisabled ? 'danger' : 'safe'}`}><Icon name="shield" size={26}/></div>
         <div className="safety-copy"><span className="eyebrow">CURRENT DELIVERY STATE</span><h2>{modeLabel}</h2><p>{mode === 'DRY_RUN' ? 'Jobs validate eligibility and write minimal audit entries. Gmail is not read and no draft or message is created.' : data?.safety.systemDisabled ? 'The shared runtime kill switch blocks outreach jobs.' : configurationBlocked ? 'Mailbox readiness must pass before any Gmail job can run.' : 'Manual jobs can send one message per day after typed confirmation. No scheduled triggers are installed.'}</p></div>
         <div className="safety-facts"><div><span>Today</span><strong>{data?.safety.sentToday} / {data?.safety.dailyLimit}</strong></div><div><span>Triggers</span><strong>{data?.safety.triggerCount}</strong></div><div><span>CC / email</span><strong>{data?.sender.cc.length}</strong></div></div>
-        <button className="danger-button" onClick={() => setModal('disable')}><Icon name="alert"/>Emergency disable</button>
+        {data?.safety.systemDisabled
+          ? <button className="primary" disabled={!!busy || mailBlocked} onClick={() => setModal('resume')}><Icon name="check"/>Resume sending</button>
+          : <button className="danger-button" onClick={() => setModal('disable')}><Icon name="alert"/>Emergency disable</button>}
       </section>
 
       {(data?.safety.configurationWarnings.length || data?.safety.configurationErrors.length) ? <section className="config-alert">
@@ -640,6 +651,8 @@ function App() {
     {modal === 'job' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run outreach job"><form className="modal compact" onSubmit={executeJob}><div className="modal-head"><div><span className="eyebrow">{mode}</span><h2>Run {pendingJob.toLowerCase().replace('_',' ')} job?</h2></div><button type="button" onClick={() => setModal(null)}><Icon name="close"/></button></div><p>{mode === 'DRY_RUN' ? 'This will validate and log eligible candidates. Gmail will not be read, no draft will be created, and no message will be sent.' : 'This job can access Gmail. Only rows that pass every server-side gate are eligible.'}</p>{jobPhrase && <label className="confirm-label">Type <strong>{jobPhrase}</strong> to continue<input value={confirmation} onChange={(e) => setConfirmation(e.target.value)} autoComplete="off"/></label>}<div className="modal-actions"><button type="button" className="secondary" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary" disabled={!!jobPhrase && confirmation.trim().toUpperCase() !== jobPhrase}>Run job</button></div></form></div>}
 
     {modal === 'disable' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Emergency disable"><div className="modal compact"><div className="modal-head"><div><span className="eyebrow danger-text">SAFETY CONTROL</span><h2>Disable all outreach now?</h2></div><button onClick={() => setModal(null)}><Icon name="close"/></button></div><p>This enables the shared runtime kill switch, revokes the authorized trigger generation and removes outreach triggers owned by this Google account. It does not delete leads or logs.</p><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="danger-button" onClick={emergencyDisable}>Enable kill switch</button></div></div></div>}
+
+    {modal === 'resume' && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Resume sending"><div className="modal compact"><div className="modal-head"><div><span className="eyebrow">SAFETY CONTROL</span><h2>Clear the kill switch?</h2></div><button onClick={() => setModal(null)}><Icon name="close"/></button></div><p>The switch stopped this console sending; it changed no lead, deleted nothing and did not touch the Apps Script deployment. Clearing it arms sending again, still subject to the daily cap, the campaign window and every per-lead gate.</p><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Leave it off</button><button className="primary" onClick={resumeSending}>Clear and resume</button></div></div></div>}
 
     {drawerLead && <LeadDrawer lead={drawerLead} statuses={data?.statuses || []} categories={data?.categories || []} onClose={() => setDrawerLead(null)} onSave={saveLead}/>} 
     {busy && <div className="busy-pill"><div className="loader small"/>{progress || (busy === 'preview' ? 'Generating preview…' : 'Working safely…')}</div>}
